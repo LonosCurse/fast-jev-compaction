@@ -112,6 +112,8 @@ export function redactSecrets(text: string, known: readonly string[] = []): Reda
     const lower = (m.match(/[a-z]/g) ?? []).length;
     const digits = (m.match(/[0-9]/g) ?? []).length;
     if (upper < 3 || lower < 3 || digits < 2) return m; // paths and URL routes are rarely mixed case
+    const segments = m.split('/').filter(Boolean);
+    if (segments.length > 1 && segments.every((s) => /^(?:[A-Za-z]+[0-9]*|v?[0-9]+)$/.test(s))) return m; // /api/v2/GetUserProfile/Settings2024
     count++;
     return REDACTED;
   });

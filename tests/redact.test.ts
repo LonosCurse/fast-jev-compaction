@@ -90,6 +90,7 @@ describe('redactSecrets review fixes', () => {
     'open docs/guides/getting-started/install/windows/step2',
     'https://github.com/tamaratran/fast-jev-compaction/issues/89',
     'see /fleet/shared/scripts/checks/tier_env_ctx_window.cjs',
+    'GET /api/v2/Users/GetUserProfile/AccountSettings2024',
   ])('base64 rule leaves paths and routes alone: %s', (text) => {
     expect(redactSecrets(text).text).toBe(text);
   });
