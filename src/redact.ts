@@ -32,7 +32,14 @@ const PREFIXED = /\b([A-Za-z]{2,10})_([A-Za-z0-9_.-]{40,})/g;
 
 /** `NAME=value`, `"apiKey": "value"`, `--token value`: keep the name, drop the value. */
 const ASSIGNMENT =
-  /((?:[A-Za-z0-9]+[_-])*(?:api[_-]?key|apikey|key|token|secret|password|passwd|pwd|auth|credentials?|client[_-]?secret|access[_-]?key)(?:[_-][A-Za-z0-9]+)*["']?\s*[:=]\s*["']?)([^\s"'`,;)\]}\\<>]{8,})/gi;
+  // repetition is bounded ({0,4}, {1,30}): an unbounded (?:[A-Za-z0-9]+[_-])* backtracks quadratically on snake_case runs
+  /((?:[A-Za-z0-9]{1,30}[_-]){0,4}(?:api[_-]?key|apikey|key|token|secret|password|passwd|pwd|auth|credentials?|client[_-]?secret|access[_-]?key)(?:[_-][A-Za-z0-9]{1,30}){0,4}["']?[ \t]{0,4}[:=][ \t]{0,4}["']?)([^\s"'`,;)\]}\\<>]{8,})/gi;
+
+/** `scheme://user:password@host`: keep the user, drop the password. */
+const URL_CREDENTIALS = /(\b[a-z][a-z0-9+.-]{1,15}:\/\/[^\s/@:]{1,64}:)([^\s@/]{6,})(@)/gi;
+
+/** Base64 secrets with `/` or `+` (AWS secret access keys and the like), which OPAQUE splits at the slash. */
+const BASE64 = /(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{32,}={0,2}(?![A-Za-z0-9+/=])/g;
 
 /** `--token value` style flags on command lines. */
 const FLAG = /(--(?:api-?key|token|password|secret|auth|client-secret)[=\s]+["']?)([^\s"'`]{8,})/gi;
@@ -91,6 +98,20 @@ export function redactSecrets(text: string, known: readonly string[] = []): Reda
   }
   out = out.replace(PREFIXED, (m, _prefix: string, tail: string) => {
     if (/\.[a-z]{1,5}$/.test(tail) || !looksOpaque(tail.replace(/\./g, ''))) return m;
+    count++;
+    return REDACTED;
+  });
+  out = out.replace(URL_CREDENTIALS, (m, head: string, value: string, at: string) => {
+    if (value.includes(REDACTED)) return m;
+    count++;
+    return `${head}${REDACTED}${at}`;
+  });
+  out = out.replace(BASE64, (m) => {
+    if (!/[/+]/.test(m)) return m; // no slash or plus: OPAQUE decides
+    const upper = (m.match(/[A-Z]/g) ?? []).length;
+    const lower = (m.match(/[a-z]/g) ?? []).length;
+    const digits = (m.match(/[0-9]/g) ?? []).length;
+    if (upper < 3 || lower < 3 || digits < 2) return m; // paths and URL routes are rarely mixed case
     count++;
     return REDACTED;
   });

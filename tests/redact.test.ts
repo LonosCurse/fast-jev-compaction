@@ -63,6 +63,38 @@ describe('redactSecrets', () => {
   });
 });
 
+describe('redactSecrets review fixes', () => {
+  it('stays fast on ~100KB of snake_case text (no quadratic backtracking)', () => {
+    for (const unit of ['a1b2c3d4e5_', 'SOME_ENV_NAME_', 'key_', 'x-']) {
+      const text = unit.repeat(Math.ceil(100_000 / unit.length));
+      const started = Date.now();
+      redactSecrets(text);
+      expect(Date.now() - started).toBeLessThan(500);
+    }
+  });
+
+  it('drops the password from URL credentials and keeps the user', () => {
+    const url = j('https://svcuser:', 'Tr0ub4dor&3xtraLong', 'RandomPasswordValue1', '@db.example.com:5432/mydb');
+    const out = redactSecrets(`curl ${url}`);
+    expect(out.text).toBe(`curl https://svcuser:${REDACTED}@db.example.com:5432/mydb`);
+  });
+
+  it('removes base64 secrets that contain a slash or plus', () => {
+    const aws = j('wJalrXUtnFEMI/K7MDENG/', 'bPxRfiCYFAKEKEY9');
+    const out = redactSecrets(`the deploy script printed: ${aws} -- copy it`);
+    expect(out.text).not.toContain(aws);
+  });
+
+  it.each([
+    'GET api/v1/users/12345/orders/67890/items/abcdef',
+    'open docs/guides/getting-started/install/windows/step2',
+    'https://github.com/tamaratran/fast-jev-compaction/issues/89',
+    'see /fleet/shared/scripts/checks/tier_env_ctx_window.cjs',
+  ])('base64 rule leaves paths and routes alone: %s', (text) => {
+    expect(redactSecrets(text).text).toBe(text);
+  });
+});
+
 describe('jevAsker', () => {
   it('sends no secret in the request body, keeps the API key in the header only', async () => {
     const ownKey = j('my-own-', 'api-key-123456');
