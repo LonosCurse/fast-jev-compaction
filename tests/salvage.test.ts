@@ -134,15 +134,68 @@ describe('resultPeek', () => {
   });
 
   test('favours the tail of a failed result, where the failure is reported', () => {
-    const text = `${'z'.repeat(500)}Error: the real reason`;
+    // A newline before the error line, as real tool output has: it also
+    // gives the boundary-safe cut below a natural place to land.
+    const text = `${'z'.repeat(500)}\nError: the real reason`;
 
     expect(resultPeek(text, true, PEEK)).toContain('Error: the real reason');
   });
 
-  test('never sends an assigned secret to the model', () => {
-    const text = `API_KEY=supersecretvalue${'q'.repeat(500)}`;
+  // resultPeek no longer redacts: redaction of everything sent to Jev (state
+  // and questions, which carry the peek) is done centrally by a separate
+  // scanner PR that wraps the whole request. This peek's own safety net is
+  // boundary-aware cutting, not full redaction — see the tests below.
 
-    expect(resultPeek(text, false, PEEK)).not.toContain('supersecretvalue');
+  test('peekTailChars 0 yields a bounded sample with only a head', () => {
+    const text = `HEAD-MARKER${' filler'.repeat(200)}TAIL-MARKER`;
+
+    const peek = resultPeek(text, false, { headChars: 40, tailChars: 0 });
+
+    expect(peek).toContain('HEAD-MARKER');
+    expect(peek).not.toContain('TAIL-MARKER');
+    expect(peek.length).toBeLessThan(200);
+  });
+
+  test('peekHeadChars 0 yields a bounded sample with only a tail', () => {
+    const text = `HEAD-MARKER${' filler'.repeat(200)}TAIL-MARKER`;
+
+    const peek = resultPeek(text, false, { headChars: 0, tailChars: 40 });
+
+    expect(peek).not.toContain('HEAD-MARKER');
+    expect(peek).toContain('TAIL-MARKER');
+    expect(peek.length).toBeLessThan(200);
+  });
+
+  test('both zero yields no sample of the content at all', () => {
+    const text = `HEAD-MARKER${' filler'.repeat(200)}TAIL-MARKER`;
+
+    const peek = resultPeek(text, false, { headChars: 0, tailChars: 0 });
+
+    expect(peek).not.toContain('HEAD-MARKER');
+    expect(peek).not.toContain('TAIL-MARKER');
+    expect(peek).not.toContain('filler');
+  });
+
+  test('cuts the head sample on a whitespace boundary so a token is not split in half', () => {
+    const secret = 'SECRETVALUEXXXXXXXXXXXXXXXX';
+    const text = `short ${secret} ${'filler '.repeat(50)}`;
+
+    // headChars=12 lands inside `secret` (offset 6 into "short " + the token);
+    // an exact-index cut would leak "SECRETV". The boundary-safe cut must
+    // back off to the whitespace before the token instead.
+    const peek = resultPeek(text, false, { headChars: 12, tailChars: 0 });
+
+    expect(peek).not.toContain('SECRET');
+  });
+
+  test('cuts the tail sample on a whitespace boundary so a token is not split in half', () => {
+    const secret = 'SECRETVALUEXXXXXXXXXXXXXXXX';
+    const text = `${'filler '.repeat(50)}${secret} tail-end`;
+
+    // tailChars is chosen so the exact cut point lands inside `secret`.
+    const peek = resultPeek(text, false, { headChars: 0, tailChars: 15 });
+
+    expect(peek).not.toContain('SECRET');
   });
 });
 

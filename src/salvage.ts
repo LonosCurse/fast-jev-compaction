@@ -82,6 +82,29 @@ export interface PeekOptions {
 }
 
 /**
+ * Widens a head/tail cut point to the nearest whitespace within `window`
+ * characters, so a token straddling the exact index (a URL, an assigned
+ * secret, a long identifier) is not split in half and left half-visible in
+ * the sample. Falls back to the exact index when no whitespace is that
+ * close.
+ */
+function boundaryNear(text: string, index: number, window = 40): number {
+  const start = Math.max(0, index - window);
+  const end = Math.min(text.length, index + window);
+  let best = -1;
+  let bestDistance = Infinity;
+  for (let i = start; i < end; i++) {
+    if (!/\s/.test(text[i]!)) continue;
+    const distance = Math.abs(i - index);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = i;
+    }
+  }
+  return best === -1 ? index : best;
+}
+
+/**
  * A bounded sample of a tool result, for the question that asks whether the
  * result is worth keeping verbatim. Without it that question is answered from
  * the tool name and a byte count alone.
@@ -89,9 +112,14 @@ export interface PeekOptions {
  * A failed result is sampled tail-first: the reason a thing failed is printed
  * last, while the head is the command echo.
  *
- * The sample is redacted, and that matters more here than anywhere else in
- * this file: it is the only place where the content of a tool result leaves
- * the machine for the model's API. Everything else sent as state is a stub.
+ * This sample is not redacted here. Redaction of everything sent to Jev —
+ * state and questions alike, and this peek rides in a question — is done
+ * centrally by a separate scanner that wraps the whole request; duplicating
+ * a narrow redaction pass in just this one path would give a false sense of
+ * coverage over the rest of state and questions, which carry no such pass.
+ * The only safety left in this function is boundary-aware cutting: the head
+ * and tail are trimmed to the nearest whitespace within 40 chars of the cut
+ * point, so a secret straddling that point is not split and partially kept.
  */
 export function resultPeek(
   text: string,
@@ -102,11 +130,15 @@ export function resultPeek(
   const tail = isError
     ? options.tailChars + Math.ceil(options.headChars / 2)
     : options.tailChars;
-  if (text.length <= head + tail + 40) return redact(text);
-  const omitted = text.length - head - tail;
-  return `${redact(text.slice(0, head))}\n[… ${omitted} chars …]\n${redact(
-    text.slice(-tail),
-  )}`;
+  if (text.length <= head + tail + 40) return text;
+  const headText = head > 0 ? text.slice(0, boundaryNear(text, head)) : '';
+  const tailStart = tail > 0 ? boundaryNear(text, text.length - tail) : text.length;
+  const tailText = tail > 0 ? text.slice(tailStart) : '';
+  if (headText.length === 0 && tailText.length === 0) {
+    return `[… ${text.length} chars, no sample …]`;
+  }
+  const omitted = text.length - headText.length - tailText.length;
+  return `${headText}\n[… ${omitted} chars …]\n${tailText}`;
 }
 
 export interface SalvageOptions {
