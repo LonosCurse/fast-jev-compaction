@@ -68,7 +68,6 @@ export function resolveOptions(options: CompactOptions = {}): ResolvedCompactOpt
   };
 }
 
-/** The two `noul` questions asked about one call: keep the call, keep its result. */
 /**
  * The two `noul` questions asked about one call: keep the call, keep its
  * result. `peek` is a bounded sample of the result, and it belongs here
@@ -88,7 +87,7 @@ export function questionsFor(call: ToolCall, peek?: string): JevQuestions {
     },
     [`result_${call.id}`]: {
       type: 'noul',
-      instructions: `The full output of tool call ${call.id} (${call.tool}, ${call.resultChars} chars) should stay in the history verbatim: the assistant still needs its contents and re-running the tool would not do${sample}`,
+      instructions: `The full output of tool call ${call.id} (${call.tool}, ${call.resultChars} chars) should stay in the history verbatim: the assistant still needs this result's contents — for example to justify a claim it made, or because the output was not deterministic or is costly to reproduce${sample}`,
     },
   };
 }
@@ -169,7 +168,6 @@ async function askBatch(
     ]),
   );
 }
-
 
 /**
  * Rebuilds the conversation from the decisions. A dropped call disappears

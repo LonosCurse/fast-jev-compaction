@@ -38,13 +38,18 @@ built-in compaction summary with the original messages.
    calibrated to land a little above the counts Jev reports.
 4. For every non-pinned call Jev gets two `noul` questions: should the **call**
    stay (knowing it was made, with its input, still matters), and should the
-   **result** stay verbatim (its contents are still needed and re-running the
-   tool would not do). The second question carries a bounded, redacted sample
-   of the result itself (`peekHeadChars` / `peekTailChars`, tail-weighted for
-   failures), so it is answered from content rather than a byte count. The
-   sample rides in the question, not the state: the state is shared by every
-   question and resent with every batch, so a sample there would be paid once
-   per batch and would crowd out the history.
+   **result** stay verbatim (the assistant still needs its contents — for
+   example to justify a claim it made, or because the output was not
+   deterministic or is costly to reproduce). The second question carries a
+   bounded sample of the result itself (`peekHeadChars` / `peekTailChars`,
+   tail-weighted for failures, cut on a whitespace boundary within 40 chars
+   where one exists so a token is less likely to be split in half), so it is
+   answered from content rather than a byte count. The sample is not redacted
+   here — redaction of everything sent to Jev, state and questions alike, is a
+   separate concern handled centrally. The sample rides in the question, not
+   the state: the state is shared by every question and resent with every
+   batch, so a sample there would be paid once per batch and would crowd out
+   the history.
 5. Questions are split into as many requests as needed so state plus questions
    stays under `maxRequestTokens` (30k by default, under Jev's 32k request
    limit). The same full state is resent with every request; requests run
