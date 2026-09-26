@@ -252,19 +252,18 @@ export function redactSecrets(text: string, known: readonly string[] = []): Reda
   return { text: out, count };
 }
 
-function isPlainObject(v: object): boolean {
-  const proto = Object.getPrototypeOf(v);
-  return proto === Object.prototype || proto === null;
-}
-
 /**
  * Redacts every string inside a JSON-shaped value; returns a new value and the
  * total count. Object keys are never changed, but they are read: a string held
  * under a credential-named key (`{ password: "hunter2" }`), or anywhere inside
  * one (`{ credentials: { user, pass } }`), is replaced whole, since it has no
- * `key=` text around it for the scanner to see. Anything that is not a plain
- * object or array (a `Date`, a class with `toJSON`) is first reduced to what
- * `JSON.stringify` would send, so redaction never changes the request's shape.
+ * `key=` text around it for the scanner to see.
+ *
+ * The value is serialized first and the walk runs over the parsed JSON, so it
+ * redacts exactly what the request will send. `toJSON` methods, `Date`s,
+ * classes and getters are resolved once, up front, by `JSON.stringify` itself;
+ * nothing executable survives into the redacted copy to reintroduce a value
+ * when the request body is built later.
  */
 export function redactDeep<T>(value: T, known: readonly string[] = []): { value: T; count: number } {
   let count = 0;
@@ -280,15 +279,13 @@ export function redactDeep<T>(value: T, known: readonly string[] = []): { value:
     }
     if (Array.isArray(v)) return v.map((x) => walk(x, underCredential));
     if (v && typeof v === 'object') {
-      if (!isPlainObject(v)) {
-        const serialized: unknown = JSON.parse(JSON.stringify(v) ?? 'null');
-        return walk(serialized, underCredential);
-      }
       const o: Record<string, unknown> = {};
       for (const [k, x] of Object.entries(v)) o[k] = walk(x, underCredential || isCredentialKey(k));
       return o;
     }
     return v;
   };
-  return { value: walk(value, false) as T, count };
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined) return { value, count };
+  return { value: walk(JSON.parse(serialized), false) as T, count };
 }

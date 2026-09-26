@@ -217,6 +217,25 @@ describe('redactDeep', () => {
     });
     expect(input.createdAt).toBe(when);
   });
+
+  it('redacts what JSON.stringify will send, including own toJSON methods and getters', () => {
+    const secret = 'opaque-literal-secret';
+    const input = {
+      literal: { toJSON: () => ({ password: secret }) },
+      get lazy() {
+        return { client_secret: secret };
+      },
+      list: [{ toJSON: () => `token=${secret}` }],
+    };
+    const { value } = redactDeep(input);
+    const body = JSON.stringify(value);
+    expect(body).not.toContain(secret);
+    expect(JSON.parse(body)).toEqual({
+      literal: { password: REDACTED },
+      lazy: { client_secret: REDACTED },
+      list: [`token=${REDACTED}`],
+    });
+  });
 });
 
 describe('redactSecrets: PEM walker', () => {
