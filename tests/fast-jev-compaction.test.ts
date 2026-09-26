@@ -145,9 +145,12 @@ describe('state fitting', () => {
   });
 
   it('truncates tool inputs before touching message text', () => {
+    // `file_path` is allowlisted and kept verbatim (see src/outbound.ts), so an
+    // oversized value there — unlike `content`, which is never sent — still
+    // forces the input-truncation stages.
     const messages = [
       message('user', 'start'),
-      call('w', 'Write', { file_path: 'x.ts', content: 'x'.repeat(5000) }, 'ok'),
+      call('w', 'Write', { file_path: 'x'.repeat(5000), content: 'ignored' }, 'ok'),
       result('w', 'ok'),
       message('assistant', 'written'),
     ];
