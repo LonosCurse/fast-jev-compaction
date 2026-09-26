@@ -124,6 +124,11 @@ stage was needed, and the number of requests.
   result is safe to delete. The assistant can always re-run the tool.
 - The full state is repeated with every request, so a history near the state
   ceiling costs one request per handful of questions.
+- Kept messages are handed back without the engine's `handle`, so a plugin
+  compaction survives `--resume` (#89). The cost applies in the live session
+  too: kept messages lose hidden reasoning and attached images, and when the
+  newest assistant turn carried extended thinking the API rejects the first
+  request after compaction; Claude Code strips thinking blocks and retries.
 
 ## Claude Code plugin
 
