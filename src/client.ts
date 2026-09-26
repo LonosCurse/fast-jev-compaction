@@ -1,4 +1,3 @@
-import { redactDeep } from './redact.js';
 import { buildJevRequest, parseJevResponse } from './request.js';
 import type { JevAsker, JevQuestions, JevResponse, JevState } from './types.js';
 
@@ -13,7 +12,7 @@ export interface JevClientOptions {
   fetch?: typeof fetch;
 }
 
-/** Asks Jev over HTTP with the global `fetch` (or an injected one). Secrets are redacted from what is sent. */
+/** Asks Jev over HTTP with the global `fetch` (or an injected one). */
 export class JevClient implements JevAsker {
   private readonly apiKey: string;
   private readonly model: string | undefined;
@@ -31,8 +30,8 @@ export class JevClient implements JevAsker {
     if (!this.apiKey) throw new Error('TYPESAFE_API_KEY is not configured');
     const request = buildJevRequest(
       { apiKey: this.apiKey, model: this.model, baseUrl: this.baseUrl },
-      redactDeep(state, [this.apiKey]).value,
-      redactDeep(questions, [this.apiKey]).value,
+      state,
+      questions,
     );
     const response = await this.fetcher(request.url, {
       method: request.method,

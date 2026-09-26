@@ -6,6 +6,7 @@ import {
   resolveHookConfig,
   summarize,
   toSessionMessages,
+  withoutHandles,
 } from '../hooks/fast-jev.ts';
 import { applyDecisions, collectToolCalls, decideCall, type Message } from '../src/index.js';
 
@@ -145,5 +146,23 @@ describe('compactSession', () => {
     await expect(
       compactSession(transcript(), { ...config, apiKey: 'k' }, async () => ({ status: 500, ok: false, text: 'x' })),
     ).rejects.toThrow(/500/);
+  });
+});
+
+describe('withoutHandles', () => {
+  it('drops every handle and keeps text, tool calls and results unchanged', () => {
+    const kept = [
+      message('user', 'Fix the failing test.', { handle: 'h-0' }),
+      call('tool-1', 'Read', { file_path: 'a.ts' }, 'Read a.ts'),
+      result('tool-1', 'ok'),
+      message('assistant', 'Done.'),
+    ];
+    const out = withoutHandles(kept);
+    expect(out.map((m) => m.handle)).toEqual([undefined, undefined, undefined, undefined]);
+    expect(out.every((m) => !('handle' in m))).toBe(true);
+    expect(out.map(({ role, text, toolUses, toolResults }) => ({ role, text, toolUses, toolResults }))).toEqual(
+      kept.map(({ role, text, toolUses, toolResults }) => ({ role, text, toolUses, toolResults })),
+    );
+    expect(kept[0]?.handle).toBe('h-0');
   });
 });
