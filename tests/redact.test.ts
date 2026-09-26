@@ -189,6 +189,56 @@ describe('redactDeep', () => {
     expect((value as typeof input).sortKey).toBe('createdAt');
     expect((input.a[0] as { api_key: string }).api_key).toContain('sk-');
   });
+
+  it('redacts opaque values held under a credential-named key', () => {
+    const input = { password: 'hunter2', apiKey: 'opaque-value', user: 'drew', tokens: 'many' };
+    const { value, count } = redactDeep(input);
+    expect(value).toEqual({ password: REDACTED, apiKey: REDACTED, user: 'drew', tokens: 'many' });
+    expect(count).toBe(2);
+  });
+
+  it('redacts every string nested under a credential-named key', () => {
+    const { value } = redactDeep({ credentials: { user: 'drew', pass: ['p1', 'p2'] }, id: 't1' });
+    expect(value).toEqual({ credentials: { user: REDACTED, pass: [REDACTED, REDACTED] }, id: 't1' });
+  });
+
+  it('keeps JSON serialization semantics for non-plain objects', () => {
+    const when = new Date('2026-09-26T21:00:00Z');
+    class Tagged {
+      toJSON() {
+        return { tag: 'x', secret_token: 'abc' };
+      }
+    }
+    const input = { createdAt: when, tagged: new Tagged() };
+    const { value } = redactDeep(input);
+    expect(JSON.parse(JSON.stringify(value))).toEqual({
+      createdAt: '2026-09-26T21:00:00.000Z',
+      tagged: { tag: 'x', secret_token: REDACTED },
+    });
+    expect(input.createdAt).toBe(when);
+  });
+});
+
+describe('redactSecrets: PEM walker', () => {
+  it('redacts each of two PEM blocks separately and keeps the text between them', () => {
+    const block = (n: string) => `-----BEGIN RSA PRIVATE KEY-----\n${n}\n-----END RSA PRIVATE KEY-----`;
+    const { text, count } = redactSecrets(`a ${block('MIIone')} b ${block('MIItwo')} c`);
+    expect(text).toBe(`a ${REDACTED} b ${REDACTED} c`);
+    expect(count).toBe(2);
+  });
+
+  it('leaves an unterminated BEGIN marker alone', () => {
+    const text = 'x -----BEGIN PRIVATE KEY-----\nMIIabc';
+    expect(redactSecrets(text).text).toBe(text);
+  });
+
+  it('stays linear on 1,000,000 chars of unterminated BEGIN markers', () => {
+    const unit = '-----BEGIN X PRIVATE KEY-----a';
+    const text = unit.repeat(Math.ceil(1_000_000 / unit.length));
+    const started = Date.now();
+    redactSecrets(text);
+    expect(Date.now() - started).toBeLessThan(200);
+  });
 });
 
 describe('jevAsker', () => {

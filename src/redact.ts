@@ -176,7 +176,32 @@ const PREFIXED_PATTERNS: readonly RegExp[] = [
   /\bAKIA[0-9A-Z]{16}\b/g, // AWS access key id
 ];
 
-const PEM_BLOCK = /-----BEGIN(?: [A-Z0-9]+)? PRIVATE KEY-----[\s\S]*?-----END(?: [A-Z0-9]+)? PRIVATE KEY-----/g;
+const PEM_BEGIN = /-----BEGIN(?: [A-Z0-9]+)? PRIVATE KEY-----/g;
+const PEM_END = /-----END(?: [A-Z0-9]+)? PRIVATE KEY-----/g;
+
+/**
+ * Replaces each `BEGIN ... END` private-key block. A single forward pass: each
+ * search starts where the previous one stopped, and once no END marker remains
+ * after a BEGIN, none remains after any later BEGIN either, so the scan stops.
+ * (A lazy `[\s\S]*?` regex rescans the whole suffix for every unterminated BEGIN.)
+ */
+function redactPemBlocks(text: string): { text: string; count: number } {
+  let count = 0;
+  let result = '';
+  let cursor = 0;
+  PEM_BEGIN.lastIndex = 0;
+  let begin: RegExpExecArray | null;
+  while ((begin = PEM_BEGIN.exec(text))) {
+    PEM_END.lastIndex = PEM_BEGIN.lastIndex;
+    const end = PEM_END.exec(text);
+    if (!end) break;
+    result += text.slice(cursor, begin.index) + REDACTED;
+    count += 1;
+    cursor = PEM_END.lastIndex;
+    PEM_BEGIN.lastIndex = cursor;
+  }
+  return { text: result + text.slice(cursor), count };
+}
 
 /**
  * `scheme://user:password@host`: keep the user, drop the password, consuming
@@ -205,11 +230,9 @@ export function redactSecrets(text: string, known: readonly string[] = []): Reda
     });
   }
 
-  PEM_BLOCK.lastIndex = 0;
-  out = out.replace(PEM_BLOCK, () => {
-    count += 1;
-    return REDACTED;
-  });
+  const pem = redactPemBlocks(out);
+  out = pem.text;
+  count += pem.count;
 
   URL_USERINFO.lastIndex = 0;
   out = out.replace(URL_USERINFO, (_m, scheme: string, user: string) => {
@@ -229,22 +252,43 @@ export function redactSecrets(text: string, known: readonly string[] = []): Reda
   return { text: out, count };
 }
 
-/** Redacts every string inside a JSON-shaped value; returns a new value and the total count. Object keys are never touched. */
+function isPlainObject(v: object): boolean {
+  const proto = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * Redacts every string inside a JSON-shaped value; returns a new value and the
+ * total count. Object keys are never changed, but they are read: a string held
+ * under a credential-named key (`{ password: "hunter2" }`), or anywhere inside
+ * one (`{ credentials: { user, pass } }`), is replaced whole, since it has no
+ * `key=` text around it for the scanner to see. Anything that is not a plain
+ * object or array (a `Date`, a class with `toJSON`) is first reduced to what
+ * `JSON.stringify` would send, so redaction never changes the request's shape.
+ */
 export function redactDeep<T>(value: T, known: readonly string[] = []): { value: T; count: number } {
   let count = 0;
-  const walk = (v: unknown): unknown => {
+  const walk = (v: unknown, underCredential: boolean): unknown => {
     if (typeof v === 'string') {
+      if (underCredential && v !== '') {
+        count += 1;
+        return REDACTED;
+      }
       const r = redactSecrets(v, known);
       count += r.count;
       return r.text;
     }
-    if (Array.isArray(v)) return v.map(walk);
+    if (Array.isArray(v)) return v.map((x) => walk(x, underCredential));
     if (v && typeof v === 'object') {
+      if (!isPlainObject(v)) {
+        const serialized: unknown = JSON.parse(JSON.stringify(v) ?? 'null');
+        return walk(serialized, underCredential);
+      }
       const o: Record<string, unknown> = {};
-      for (const [k, x] of Object.entries(v)) o[k] = walk(x);
+      for (const [k, x] of Object.entries(v)) o[k] = walk(x, underCredential || isCredentialKey(k));
       return o;
     }
     return v;
   };
-  return { value: walk(value) as T, count };
+  return { value: walk(value, false) as T, count };
 }
