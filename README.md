@@ -136,11 +136,12 @@ stage was needed, and the number of requests.
   PEM/PGP private-key blocks, and the plugin's own API key. It does not parse
   syntax, so `PASSWORD=hunter2` or a password in a URL passes through. It runs
   on the already-abridged state, so a token cut mid-value may not match.
-- Tool inputs sent to Jev are allowlisted (`src/outbound.ts`), not fully
-  redacted for patterns: Jev sees what each call touched (paths, patterns,
-  URLs, a Bash program name) but not its arguments (command lines, file
-  contents, prompts). This may lower decision quality, which has not been
-  measured yet.
+- Tool inputs sent to Jev are reduced (`src/outbound.ts`): Jev sees each
+  call's tool name and field names, the file path of built-in file tools
+  (Read, Write, Edit, MultiEdit, NotebookEdit), and a size marker for every
+  other value, including Bash commands. Conversation text is still sent as
+  written, so this limits tool inputs only. Seeing less may lower decision
+  quality, which has not been measured yet.
 
 ## Claude Code plugin
 

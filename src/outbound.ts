@@ -1,30 +1,24 @@
 /**
- * The primary protection against credentials leaving the machine: an
- * ALLOWLIST of tool-input fields whose *value* is ever sent to Jev, not
- * pattern-based redaction. `outboundInput` keeps every field NAME (so Jev
- * still sees the shape of the call) but replaces every value with a size
- * marker (`"<N chars>"`, `"<number>"`, `"<boolean>"`, `"<object>"`,
- * `"<array>"`) unless the field is one of the fixed allowlisted fields below,
- * in which case a string value itself — or, for `url`, a stripped-down
- * scheme+host+pathname — is kept because it identifies *what* the call
- * touched (a file, a search pattern, a subagent) without exposing arguments
- * such as command lines, file contents, or prompts that may carry secrets.
- * For `Bash`-like tools, the first whitespace-delimited word of `command`
- * (the program name) is also kept, with the rest reduced to a size marker.
+ * What of a tool call's input is sent to Jev. Every field NAME is kept, so Jev
+ * sees the shape of the call, but a field's VALUE is sent only for the exact
+ * (built-in tool, field) pairs in `KEEP_VALUE`, and only when it is a string.
+ * Those are the file locators Jev needs to see that one call supersedes another
+ * (a Read of a file followed by an Edit of it). Every other value becomes a
+ * size marker (`"<N chars>"`, `"<number>"`, `"<boolean>"`, `"<array>"`,
+ * `"<object>"`). No value is parsed: no shell tokens, no URLs.
+ *
+ * This limits what tool inputs send. It does not cover conversation text,
+ * which is sent to Jev as written.
  */
 
-/** Field names whose value identifies what a call touched, kept verbatim. */
-const ALLOWED_FIELDS = new Set([
-  'file_path',
-  'path',
-  'notebook_path',
-  'pattern',
-  'glob',
-  'description',
-  'subagent_type',
-  'skill',
-  'url',
-]);
+/** Exact tool name → the one field whose string value is sent. */
+const KEEP_VALUE: Record<string, string> = {
+  Read: 'file_path',
+  Write: 'file_path',
+  Edit: 'file_path',
+  MultiEdit: 'file_path',
+  NotebookEdit: 'notebook_path',
+};
 
 function sizeMarker(value: unknown): string {
   if (typeof value === 'string') return `<${value.length} chars>`;
@@ -34,45 +28,16 @@ function sizeMarker(value: unknown): string {
   return '<object>';
 }
 
-/** Scheme + host + pathname only; userinfo, query and fragment are dropped. */
-function safeUrl(value: string): string {
-  try {
-    const parsed = new URL(value);
-    return `${parsed.protocol}//${parsed.host}${parsed.pathname}`;
-  } catch {
-    return sizeMarker(value);
-  }
-}
-
-function programName(command: string): string {
-  const program = /\S+/.exec(command)?.[0] ?? '';
-  return `${program} …(${command.length} chars)`;
-}
-
-/**
- * Builds the view of one tool call's input that is safe to send to Jev:
- * every field name is kept, but only allowlisted fields keep their value.
- * `Bash`-like tools additionally keep the program name from `command`.
- */
+/** The view of one tool call's input that is sent to Jev. */
 export function outboundInput(
   tool: string,
   input: Record<string, unknown>,
 ): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(input)) {
-    if (key === 'command' && tool === 'Bash') {
-      out[key] = typeof value === 'string' ? programName(value) : sizeMarker(value);
-      continue;
-    }
-    if (ALLOWED_FIELDS.has(key)) {
-      if (key === 'url') {
-        out[key] = typeof value === 'string' ? safeUrl(value) : sizeMarker(value);
-      } else {
-        out[key] = typeof value === 'string' ? value : sizeMarker(value);
-      }
-      continue;
-    }
-    out[key] = sizeMarker(value);
-  }
-  return out;
+  const keep = Object.hasOwn(KEEP_VALUE, tool) ? KEEP_VALUE[tool] : undefined;
+  return Object.fromEntries(
+    Object.entries(input).map(([key, value]) => [
+      key,
+      key === keep && typeof value === 'string' ? value : sizeMarker(value),
+    ]),
+  );
 }
