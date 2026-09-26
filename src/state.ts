@@ -1,3 +1,4 @@
+import { outboundInput } from './outbound.js';
 import type {
   CompactionState,
   FittedState,
@@ -108,7 +109,7 @@ function resultNote(call: ToolCall): string {
 
 /** One call as a single line, for when the structured form is too costly. */
 function compactCall(call: ToolCall): string {
-  const input = Object.entries(call.input)
+  const input = Object.entries(outboundInput(call.tool, call.input))
     .map(([key, value]) => {
       const text = typeof value === 'string' ? value : inputText({ [key]: value }, 200);
       return `${key}=${text.replace(/\s+/g, ' ')}`;
@@ -159,7 +160,7 @@ function historyEntries(
     const toolCalls = (byMessage.get(i) ?? []).map((call) => ({
       id: call.id,
       tool: call.tool,
-      input: inputText(call.input, inputChars),
+      input: inputText(outboundInput(call.tool, call.input), inputChars),
       result: resultNote(call),
     }));
     if (message.text.trim().length === 0 && toolCalls.length === 0) return;
