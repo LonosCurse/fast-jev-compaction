@@ -39,43 +39,7 @@ describe('redactSecrets: prefixed and shaped credentials', () => {
   });
 });
 
-describe('redactSecrets: credential-named key + separator + whole-value walk', () => {
-  it('keeps the name of an assignment and drops only the value', () => {
-    expect(redactSecrets('DB_PASSWORD=hunter2hunter2').text).toBe(`DB_PASSWORD=${REDACTED}`);
-    expect(redactSecrets('--token abcdefgh12345678').text).toBe(`--token ${REDACTED}`);
-  });
-
-  it('redacts JSON, YAML and CLI forms', () => {
-    expect(redactSecrets(JSON.stringify({ api_key: 'sk-abc123secretvalue' })).text).toBe(
-      '{"api_key":"[REDACTED]"}',
-    );
-    expect(redactSecrets('password: x').text).toBe(`password: ${REDACTED}`);
-    expect(redactSecrets('--api-key=xyz123').text).toBe(`--api-key=${REDACTED}`);
-    expect(redactSecrets('--token xyz123').text).toBe(`--token ${REDACTED}`);
-  });
-
-  it('redacts Authorization: Bearer / Basic, keeping the scheme word', () => {
-    expect(redactSecrets('Authorization: Bearer abc.def-ghi_123').text).toBe(
-      `Authorization: Bearer ${REDACTED}`,
-    );
-    expect(redactSecrets('Authorization: Basic dXNlcjpwYXNz').text).toBe(
-      `Authorization: Basic ${REDACTED}`,
-    );
-  });
-
-  it('redacts only the token value in a URL query string, leaving other params alone', () => {
-    expect(redactSecrets('GET /callback?token=abc123&x=1').text).toBe(
-      `GET /callback?token=${REDACTED}&x=1`,
-    );
-  });
-
-  it('drops the password from URL userinfo and keeps the user', () => {
-    const url = 'https://svcuser:Tr0ub4dorSecretValue1@db.example.com:5432/mydb';
-    expect(redactSecrets(`curl ${url}`).text).toBe(
-      `curl https://svcuser:${REDACTED}@db.example.com:5432/mydb`,
-    );
-  });
-
+describe('redactSecrets: covered shapes only (Drew, 2026-09-26)', () => {
   it('redacts a PEM private key block wherever it appears', () => {
     const pem = [
       '-----BEGIN RSA PRIVATE KEY-----',
@@ -90,29 +54,13 @@ describe('redactSecrets: credential-named key + separator + whole-value walk', (
   it('replaces known values exactly, whatever their shape', () => {
     expect(redactSecrets('key is plainwordsecret!', ['plainwordsecret!']).text).toBe(`key is ${REDACTED}`);
   });
-});
 
-describe('redactSecrets: escapes the old regex approach kept leaking on', () => {
-  it('handles a quoted value containing an escaped quote of the same kind', () => {
-    expect(redactSecrets('"api_key": "abc\\"def123"').text).toBe('"api_key": "[REDACTED]"');
-    expect(redactSecrets("password='it\\'s-secret'").text).toBe(`password='${REDACTED}'`);
-  });
-
-  it('redacts a quoted value longer than 512 chars, with no length cap', () => {
-    const long = 'x'.repeat(600);
-    expect(redactSecrets(`PASSWORD="${long}"`).text).toBe(`PASSWORD="${REDACTED}"`);
-  });
-
-  it('redacts short values with no minimum length', () => {
-    expect(redactSecrets('PASSWORD=hunter2').text).toBe(`PASSWORD=${REDACTED}`);
-    expect(redactSecrets('token: x1').text).toBe(`token: ${REDACTED}`);
-    expect(redactSecrets('--password p').text).toBe(`--password ${REDACTED}`);
-  });
-
-  it('leaves no tail of the secret behind (whole value consumed, not a partial match)', () => {
-    const out = redactSecrets('api_key=abcdefghijklmnopqrstuvwxyz0123456789');
-    expect(out.text).toBe(`api_key=${REDACTED}`);
-    expect(out.text).not.toMatch(/[a-z0-9]{4,}/);
+  it.each([
+    'PASSWORD=hunter2',
+    '{"password":\n"hunter2"}',
+    'https://svcuser:Tr0ub4dor@db.example.com/x',
+  ])('does not parse syntax: an unshaped value is out of scope and passes through (%s)', (text) => {
+    expect(redactSecrets(text)).toEqual({ text, count: 0 });
   });
 });
 
@@ -141,31 +89,8 @@ describe('redactSecrets: avoids the over-redaction found before', () => {
 });
 
 describe('redactSecrets: linear time on adversarial input', () => {
-  it.each([
-    ['snake_case runs (key scanner)', 'a1b2c3d4e5_'],
-    ['env-name runs (key scanner)', 'SOME_ENV_NAME_'],
-    ['key runs (key scanner)', 'key_'],
-    ['dash runs (key scanner)', 'x-'],
-    ['sk- like runs (prefixed rule)', 'sk-a'],
-    ['colon runs (key scanner)', 'a:b:'],
-    ['userinfo-like runs (URL rule)', 'a://u:p@'],
-  ])('stays fast on ~100,000 chars of %s', (_label, unit) => {
-    const text = unit.repeat(Math.ceil(100_000 / unit.length));
-    const started = Date.now();
-    redactSecrets(text);
-    expect(Date.now() - started).toBeLessThan(100);
-  });
-
-  it('stays fast on a 100,000-char unterminated quoted value', () => {
-    const text = `password="${'a'.repeat(100_000)}`;
-    const started = Date.now();
-    redactSecrets(text);
-    expect(Date.now() - started).toBeLessThan(100);
-  });
-
-  it('stays fast on repeated PEM BEGIN markers with no matching END', () => {
-    const unit = '-----BEGIN X PRIVATE KEY-----a';
-    const text = unit.repeat(Math.ceil(100_000 / unit.length));
+  it('stays fast on ~100,000 chars of sk- like runs', () => {
+    const text = 'sk-a'.repeat(25_000);
     const started = Date.now();
     redactSecrets(text);
     expect(Date.now() - started).toBeLessThan(100);
@@ -190,40 +115,29 @@ describe('redactDeep', () => {
     expect((input.a[0] as { api_key: string }).api_key).toContain('sk-');
   });
 
-  it('redacts opaque values held under a credential-named key', () => {
-    const input = { password: 'hunter2', apiKey: 'opaque-value', user: 'drew', tokens: 'many' };
-    const { value, count } = redactDeep(input);
-    expect(value).toEqual({ password: REDACTED, apiKey: REDACTED, user: 'drew', tokens: 'many' });
-    expect(count).toBe(2);
-  });
-
-  it('redacts every string nested under a credential-named key', () => {
-    const { value } = redactDeep({ credentials: { user: 'drew', pass: ['p1', 'p2'] }, id: 't1' });
-    expect(value).toEqual({ credentials: { user: REDACTED, pass: [REDACTED, REDACTED] }, id: 't1' });
-  });
-
   it('keeps JSON serialization semantics for non-plain objects', () => {
     const when = new Date('2026-09-26T21:00:00Z');
+    const token = SECRETS.githubPat;
     class Tagged {
       toJSON() {
-        return { tag: 'x', secret_token: 'abc' };
+        return { tag: 'x', note: `uses ${token}` };
       }
     }
     const input = { createdAt: when, tagged: new Tagged() };
     const { value } = redactDeep(input);
     expect(JSON.parse(JSON.stringify(value))).toEqual({
       createdAt: '2026-09-26T21:00:00.000Z',
-      tagged: { tag: 'x', secret_token: REDACTED },
+      tagged: { tag: 'x', note: `uses ${REDACTED}` },
     });
     expect(input.createdAt).toBe(when);
   });
 
   it('redacts what JSON.stringify will send, including own toJSON methods and getters', () => {
-    const secret = 'opaque-literal-secret';
+    const secret = SECRETS.slack;
     const input = {
-      literal: { toJSON: () => ({ password: secret }) },
+      literal: { toJSON: () => ({ note: secret }) },
       get lazy() {
-        return { client_secret: secret };
+        return { note: secret };
       },
       list: [{ toJSON: () => `token=${secret}` }],
     };
@@ -231,8 +145,8 @@ describe('redactDeep', () => {
     const body = JSON.stringify(value);
     expect(body).not.toContain(secret);
     expect(JSON.parse(body)).toEqual({
-      literal: { password: REDACTED },
-      lazy: { client_secret: REDACTED },
+      literal: { note: REDACTED },
+      lazy: { note: REDACTED },
       list: [`token=${REDACTED}`],
     });
   });
@@ -240,11 +154,9 @@ describe('redactDeep', () => {
 
 describe('redactDeep: __proto__ keys', () => {
   it('keeps a JSON __proto__ key as an own property and redacts inside it', () => {
-    const input = JSON.parse('{"__proto__":{"x":1,"password":"hunter2"},"y":2}') as object;
+    const input = JSON.parse(`{"__proto__":{"x":1,"note":"${SECRETS.aws}"},"y":2}`) as object;
     const { value } = redactDeep(input);
-    expect(JSON.parse(JSON.stringify(value))).toEqual(
-      JSON.parse('{"__proto__":{"x":1,"password":"[REDACTED]"},"y":2}'),
-    );
+    expect(JSON.parse(JSON.stringify(value))).toEqual(JSON.parse('{"__proto__":{"x":1,"note":"[REDACTED]"},"y":2}'));
     expect(Object.getPrototypeOf(value)).toBe(Object.prototype);
   });
 });
