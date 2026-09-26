@@ -259,8 +259,15 @@ function notify(
 export const register: Register = (on: On, options: PluginOptions) => {
   const configured = resolveHookConfig(options);
   let compacting = false;
+  let skipNoticed = false;
 
   on('session.compact', async ($, event, next) => {
+    // A subagent's or fork's own transcript (a fork carries the parent's) is left to core,
+    // precompute included.
+    if (event.agentId) return next(event);
+    // A precompute installs nothing: skip it rather than send the history to Jev ahead of
+    // time, or let core precompute a summary that the coming compaction would install.
+    if (event.trigger === 'precompute') return { skip: 'fast-jev-compaction: no precompute' };
     try {
       const config = { ...configured, apiKey: await getApiKey($, configured) };
       const { result, messages } = await compactSession(event.messages, config, async (url, init) => {
@@ -290,16 +297,24 @@ export const register: Register = (on: On, options: PluginOptions) => {
   });
 
   on('turn.complete', async ($, event: TurnCompleteInput, next) => {
-    if (compacting) return next(event);
+    // Only the main loop's answered turns: a subagent's turn.complete (agentId) reads the
+    // main session's usage too, and an interrupted turn is no moment to compact.
+    if (compacting || event.agentId || event.reason !== 'answer') return next(event);
+    compacting = true; // claimed before any await, so an overlapping dispatch returns above
     try {
       const { context } = await $.session.usage();
-      if ((context.percent ?? 0) < configured.compactAtPercent) return next(event);
-      compacting = true;
-      await $.session.compact();
+      if ((context.percent ?? 0) >= configured.compactAtPercent) {
+        const outcome = await $.session.compact();
+        if (outcome.skip) $.ui.log(`auto-compact vetoed (${outcome.skip})`);
+      }
     } catch (error) {
-      $.ui.log(
-        `auto-compact skipped (${error instanceof Error ? error.message : String(error)})`,
-      );
+      // Toast the first failure once, so a threshold that never compacts is not silent.
+      const text = `auto-compact skipped (${error instanceof Error ? error.message : String(error)})`;
+      if (skipNoticed) $.ui.log(text);
+      else {
+        skipNoticed = true;
+        notify($, text);
+      }
     } finally {
       compacting = false;
     }
