@@ -136,7 +136,8 @@ stage was needed, and the number of requests.
   or shortened in the output (they are only abridged in the state Jev sees).
 - Token sizes are estimates from character counts, not a tokenizer.
 - Calibration is at the request level; a probability is not a proof that a
-  result is safe to delete. The assistant can always re-run the tool.
+  result is safe to delete. The assistant can re-run a dropped tool, at a cost
+  in time and tokens, and the output may differ.
 - The full state is repeated with every request, so a history near the state
   ceiling costs one request per handful of questions.
 - Kept messages are handed back without the engine's `handle`, so a plugin
