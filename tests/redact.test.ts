@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { jevAsker, withoutHandles } from '../hooks/fast-jev.js';
+import { JevClient } from '../src/client.js';
 import { REDACTED, redactDeep, redactSecrets } from '../src/redact.js';
 
 // Fake credentials, assembled at run time so no credential-shaped literal sits in the repo.
@@ -129,5 +130,48 @@ describe('withoutHandles', () => {
     expect(out.every((m) => !('handle' in m))).toBe(true);
     expect(out[0]!.toolUses[0]!.tool_use_id).toBe('u1');
     expect(out[1]!.toolResults![0]!.tool_use_id).toBe('u1');
+  });
+});
+
+describe('redactSecrets PR review fixes', () => {
+  it('removes Stripe secret keys in the sk_live_/sk_test_ form', () => {
+    for (const key of [j('sk_', 'live_', 'AbCdEfGhIjKlMnOp12'), j('sk_', 'test_', 'AbCdEfGhIjKlMnOp12')]) {
+      const out = redactSecrets(`stripe key ${key}`);
+      expect(out.text).toBe(`stripe key ${REDACTED}`);
+    }
+  });
+
+  it('drops the whole quoted value, spaces included', () => {
+    const phrase = 'correct horse battery staple';
+    expect(redactSecrets(`PASSWORD="${phrase}"`).text).toBe(`PASSWORD="${REDACTED}"`);
+    expect(redactSecrets(`db_password='${phrase}'`).text).toBe(`db_password='${REDACTED}'`);
+    expect(redactSecrets(JSON.stringify({ password: phrase })).text).toBe(`{"password":"${REDACTED}"}`);
+  });
+
+  it('leaves one marker, counted once, when a token pattern already took the value', () => {
+    const key = j('sk-', 'ant-', 'abcdefghijklmnopqrstuvwx');
+    expect(redactSecrets(`API_KEY=${key}`)).toEqual({ text: `API_KEY=${REDACTED}`, count: 1 });
+  });
+});
+
+describe('JevClient', () => {
+  it('redacts the library request path too, and keeps its own key in the header only', async () => {
+    const ownKey = j('client-', 'api-key-123456');
+    let body = '';
+    let headers: Record<string, string> = {};
+    const client = new JevClient({
+      apiKey: ownKey,
+      fetch: (async (_url: string, init: { body: string; headers: Record<string, string> }) => {
+        body = init.body;
+        headers = init.headers;
+        return { status: 200, ok: true, text: async () => JSON.stringify({ answers: {} }) };
+      }) as never,
+    });
+    await client.ask(
+      { goal: `deploy with ${SECRETS.openrouter} and ${ownKey}` } as never,
+      { call_t1: { type: 'noul', instructions: `input was ${SECRETS.anthropic}` } } as never,
+    );
+    for (const secret of [SECRETS.openrouter, SECRETS.anthropic, ownKey]) expect(body).not.toContain(secret);
+    expect(headers.authorization).toBe(`Bearer ${ownKey}`);
   });
 });

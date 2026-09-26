@@ -13,7 +13,7 @@ export const REDACTED = '[REDACTED]';
 /** Credentials with a recognisable shape, replaced whole. */
 const TOKEN_PATTERNS: readonly RegExp[] = [
   /\bsk-(?:ant|or|kimi|proj|live|test)?-?[A-Za-z0-9_-]{16,}/g, // Anthropic, OpenRouter, Kimi, OpenAI, Stripe
-  /\b(?:rk|pk)_(?:live|test)_[A-Za-z0-9]{16,}/g, // Stripe
+  /\b(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{16,}/g, // Stripe
   /\bpit-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, // GoHighLevel private integration
   /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}\b/g, // GitHub
   /\bgithub_pat_[A-Za-z0-9_]{30,}\b/g,
@@ -30,10 +30,27 @@ const TOKEN_PATTERNS: readonly RegExp[] = [
 /** `prefix_<long random>` keys (Typesafe-style); the tail must look random, not like a snake_case name. */
 const PREFIXED = /\b([A-Za-z]{2,10})_([A-Za-z0-9_.-]{40,})/g;
 
-/** `NAME=value`, `"apiKey": "value"`, `--token value`: keep the name, drop the value. */
-const ASSIGNMENT =
+/** The credential-ish name part shared by the assignment patterns. */
+const SECRET_NAME =
   // repetition is bounded ({0,4}, {1,30}): an unbounded (?:[A-Za-z0-9]+[_-])* backtracks quadratically on snake_case runs
-  /((?:[A-Za-z0-9]{1,30}[_-]){0,4}(?:api[_-]?key|apikey|key|token|secret|password|passwd|pwd|auth|credentials?|client[_-]?secret|access[_-]?key)(?:[_-][A-Za-z0-9]{1,30}){0,4}["']?[ \t]{0,4}[:=][ \t]{0,4}["']?)([^\s"'`,;)\]}\\<>]{8,})/gi;
+  "(?:[A-Za-z0-9]{1,30}[_-]){0,4}(?:api[_-]?key|apikey|key|token|secret|password|passwd|pwd|auth|credentials?|client[_-]?secret|access[_-]?key)(?:[_-][A-Za-z0-9]{1,30}){0,4}";
+
+/** `NAME="a quoted value, spaces included"`: keep the name and quotes, drop the whole value. */
+const QUOTED_ASSIGNMENT = new RegExp(
+  `(${SECRET_NAME}["']?[ \\t]{0,4}[:=][ \\t]{0,4})(["'])((?:(?!\\2)[^\\n\\\\]){1,512})\\2`,
+  'gi',
+);
+
+/** `NAME=value`, `"apiKey": "value"`, `--token value`: keep the name, drop the value. */
+const ASSIGNMENT = new RegExp(
+  `(${SECRET_NAME}["']?[ \\t]{0,4}[:=][ \\t]{0,4}["']?)([^\\s"'\`,;)\\]}\\\\<>]{8,})`,
+  'gi',
+);
+
+/** True when a captured value already starts with (or is) a redaction marker. */
+function alreadyRedacted(value: string): boolean {
+  return value.includes(REDACTED.slice(0, -1));
+}
 
 /** `scheme://user:password@host`: keep the user, drop the password. */
 const URL_CREDENTIALS = /(\b[a-z][a-z0-9+.-]{1,15}:\/\/[^\s/@:]{1,64}:)([^\s@/]{6,})(@)/gi;
@@ -122,8 +139,13 @@ export function redactSecrets(text: string, known: readonly string[] = []): Reda
     count++;
     return `${scheme} ${REDACTED}`;
   });
+  out = out.replace(QUOTED_ASSIGNMENT, (m, name: string, quote: string, value: string) => {
+    if (alreadyRedacted(value) || looksLikeCode(value)) return m;
+    count++;
+    return `${name}${quote}${REDACTED}${quote}`;
+  });
   out = out.replace(ASSIGNMENT, (m, name: string, value: string) => {
-    if (value.includes(REDACTED) || looksLikeCode(value)) return m;
+    if (alreadyRedacted(value) || looksLikeCode(value)) return m;
     count++;
     return `${name}${REDACTED}`;
   });
