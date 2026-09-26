@@ -238,7 +238,28 @@ describe('redactDeep', () => {
   });
 });
 
+describe('redactDeep: __proto__ keys', () => {
+  it('keeps a JSON __proto__ key as an own property and redacts inside it', () => {
+    const input = JSON.parse('{"__proto__":{"x":1,"password":"hunter2"},"y":2}') as object;
+    const { value } = redactDeep(input);
+    expect(JSON.parse(JSON.stringify(value))).toEqual(
+      JSON.parse('{"__proto__":{"x":1,"password":"[REDACTED]"},"y":2}'),
+    );
+    expect(Object.getPrototypeOf(value)).toBe(Object.prototype);
+  });
+});
+
 describe('redactSecrets: PEM walker', () => {
+  it('redacts multi-word labels and PGP key blocks', () => {
+    for (const [b, e] of [
+      ['-----BEGIN OPENSSH PRIVATE KEY-----', '-----END OPENSSH PRIVATE KEY-----'],
+      ['-----BEGIN PGP PRIVATE KEY BLOCK-----', '-----END PGP PRIVATE KEY BLOCK-----'],
+      ['-----BEGIN ENCRYPTED RSA PRIVATE KEY-----', '-----END ENCRYPTED RSA PRIVATE KEY-----'],
+    ]) {
+      expect(redactSecrets(`a ${b}\nlQHYBGKsecret\n${e} b`).text).toBe(`a ${REDACTED} b`);
+    }
+  });
+
   it('redacts each of two PEM blocks separately and keeps the text between them', () => {
     const block = (n: string) => `-----BEGIN RSA PRIVATE KEY-----\n${n}\n-----END RSA PRIVATE KEY-----`;
     const { text, count } = redactSecrets(`a ${block('MIIone')} b ${block('MIItwo')} c`);

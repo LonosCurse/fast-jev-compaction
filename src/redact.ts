@@ -10,17 +10,25 @@
  * an unquoted value — and replaces exactly that span with one `[REDACTED]`
  * marker. Four more narrow, explicit rules run alongside it: shaped bare tokens
  * (`sk-`, `ghp_`, `AKIA...`, etc.), PEM private-key blocks, URL userinfo
- * passwords, and the caller's own known secret values (matched verbatim,
- * wherever they appear). Each rule only touches text its earlier neighbours
+ * passwords, and the caller's own known secret values (matched verbatim
+ * anywhere inside a string value). Each rule only touches text its earlier neighbours
  * left alone, so a value is never counted or bracketed twice.
  *
  * Pattern-based by necessity: `$.env.get` takes literal names only, so the hook
  * cannot enumerate the environment. Values the hook does hold (its own API key)
  * are passed as `known` and replaced exactly.
  *
- * Best-effort, not a guarantee: a credential with an unrecognised name or shape,
- * split across values, or reconstructed from adjacent fragments can still slip
- * through. This also runs after the state has already been abridged (`fitState`
+ * Best-effort safety net, not a guarantee (Drew's ruling, 2026-09-26). What it
+ * covers is exactly this list, and only in string values, never in object keys:
+ *   1. values of credential-named keys (`key=value`, `key: value`, JSON, `--flag value`,
+ *      and strings held under a credential-named object key);
+ *   2. prefixed tokens: `sk-`, `sk_live_`/`sk_test_`, `ghp_`, `gho_`, `github_pat_`,
+ *      `xox[bap]-`, `AKIA...`;
+ *   3. PEM / PGP private-key blocks;
+ *   4. URL userinfo passwords;
+ *   5. the caller's own known secret values.
+ * A secret outside this list is a coverage request, not a defect in the list.
+ * The primary control is sending less to Jev, not redacting more. This also runs after the state has already been abridged (`fitState`
  * truncates and omits before `jevAsker`/`JevClient.ask` ever see it) — the code
  * path here only has that abridged text, not the original transcript, so a
  * secret truncated mid-value by abridging may not read as one of these shapes
@@ -176,8 +184,9 @@ const PREFIXED_PATTERNS: readonly RegExp[] = [
   /\bAKIA[0-9A-Z]{16}\b/g, // AWS access key id
 ];
 
-const PEM_BEGIN = /-----BEGIN(?: [A-Z0-9]+)? PRIVATE KEY-----/g;
-const PEM_END = /-----END(?: [A-Z0-9]+)? PRIVATE KEY-----/g;
+/** Up to four label words (`RSA`, `OPENSSH`, `PGP`, `ENCRYPTED`, ...) and PGP's trailing `BLOCK`; bounded so it stays linear. */
+const PEM_BEGIN = /-----BEGIN(?: [A-Z0-9]+){0,4} PRIVATE KEY(?: BLOCK)?-----/g;
+const PEM_END = /-----END(?: [A-Z0-9]+){0,4} PRIVATE KEY(?: BLOCK)?-----/g;
 
 /**
  * Replaces each `BEGIN ... END` private-key block. A single forward pass: each
@@ -279,8 +288,16 @@ export function redactDeep<T>(value: T, known: readonly string[] = []): { value:
     }
     if (Array.isArray(v)) return v.map((x) => walk(x, underCredential));
     if (v && typeof v === 'object') {
+      // defineProperty, not `o[k] =`: a JSON key named `__proto__` must stay an own property.
       const o: Record<string, unknown> = {};
-      for (const [k, x] of Object.entries(v)) o[k] = walk(x, underCredential || isCredentialKey(k));
+      for (const [k, x] of Object.entries(v)) {
+        Object.defineProperty(o, k, {
+          value: walk(x, underCredential || isCredentialKey(k)),
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
+      }
       return o;
     }
     return v;
