@@ -129,6 +129,12 @@ stage was needed, and the number of requests.
   too: kept messages lose hidden reasoning and attached images, and when the
   newest assistant turn carried extended thinking the API rejects the first
   request after compaction; Claude Code strips thinking blocks and retries.
+- Credential redaction (`src/redact.ts`) before the Jev request is
+  best-effort, not a guarantee: an unrecognised key name or shape can still
+  slip through. It also runs on the state as `fitState` already built it,
+  after truncation and abridging, not on the original messages — the request
+  boundary it hooks never sees the full pre-abridged text, so a secret cut
+  mid-value by abridging may no longer read as one of the shapes it looks for.
 
 ## Claude Code plugin
 
