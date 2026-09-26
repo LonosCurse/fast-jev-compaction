@@ -129,6 +129,13 @@ stage was needed, and the number of requests.
   too: kept messages lose hidden reasoning and attached images, and when the
   newest assistant turn carried extended thinking the API rejects the first
   request after compaction; Claude Code strips thinking blocks and retries.
+- Credential redaction (`src/redact.ts`) before the Jev request is a
+  best-effort safety net, not a guarantee. It covers only string values (never
+  object keys) with a recognisable token shape: prefixed tokens (`sk-`,
+  `sk_live_`/`sk_test_`, `ghp_`, `gho_`, `github_pat_`, `xox[bap]-`, `AKIA`),
+  PEM/PGP private-key blocks, and the plugin's own API key. It does not parse
+  syntax, so `PASSWORD=hunter2` or a password in a URL passes through. It runs
+  on the already-abridged state, so a token cut mid-value may not match.
 
 ## Claude Code plugin
 
