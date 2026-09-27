@@ -416,6 +416,27 @@ describe('compact', () => {
     expect(JSON.stringify(sent)).toContain('DISTINCTIVE-TAIL');
   });
 
+  it('never samples a non-Read result', async () => {
+    const messages = transcript();
+    messages[7]!.toolResults![0]!.text = 'PASSWORD=hunter2 printed by the build';
+    const sent: JevQuestions[] = [];
+    const recorder: JevAsker = {
+      async ask(_state, questions: JevQuestions) {
+        sent.push(questions);
+        return {
+          answers: Object.fromEntries(
+            Object.keys(questions).map((key) => [key, { type: 'noul' as const, noul: 0.9 }]),
+          ),
+        };
+      },
+    };
+
+    await compact(messages, recorder, { preserveRecentMessages: 0 });
+
+    expect(sent.length).toBeGreaterThan(0);
+    expect(JSON.stringify(sent)).not.toContain('hunter2');
+  });
+
   it('resends the full state with every batch and merges the answers', async () => {
     const seen: Seen[] = [];
     const messages = transcript();

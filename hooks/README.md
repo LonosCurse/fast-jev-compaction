@@ -10,11 +10,11 @@ messages. User and assistant text is never touched. Jev is sent the whole
 conversation as `state` (tool outputs replaced by a one-line note) and, for
 every tool call outside the pinned first and newest messages, two questions:
 whether the call should stay and whether its full output should stay. The
-second question carries a bounded sample of that output (`peekHeadChars` /
+second question carries, for `Read` calls only, a bounded sample of that output (`peekHeadChars` /
 `peekTailChars`, tail-weighted for failures, cut on a whitespace boundary
 within 40 chars where one exists), so it is answered from content rather than
-from a byte count. The sample is not redacted; redaction of everything sent to
-Jev is handled centrally, separately from this plugin. The sample rides in the
+from a byte count. Other tools' results are never sampled, and samples get only
+the shape-only redaction in `src/redact.ts`. The sample rides in the
 question rather than the state, which is shared and re-sent with every batch. An
 item is kept when Jev's probability reaches `keepThreshold`; a dropped result
 is replaced by its first `truncateHeadChars` characters, a one-line note, and

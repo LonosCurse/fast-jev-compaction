@@ -112,11 +112,9 @@ function boundaryNear(text: string, index: number, window = 40): number {
  * A failed result is sampled tail-first: the reason a thing failed is printed
  * last, while the head is the command echo.
  *
- * This sample is not redacted here. Redaction of everything sent to Jev —
- * state and questions alike, and this peek rides in a question — is done
- * centrally by a separate scanner that wraps the whole request; duplicating
- * a narrow redaction pass in just this one path would give a false sense of
- * coverage over the rest of state and questions, which carry no such pass.
+ * This sample is not redacted here. Only `Read` results are sampled
+ * (`peeksFor`), and the whole request then gets the best-effort, shape-only
+ * pass in `redact.ts`; a plain `NAME=value` secret in a read file is sent.
  * The only safety left in this function is boundary-aware cutting: the head
  * and tail are trimmed to the nearest whitespace within 40 chars of the cut
  * point, so a secret straddling that point is not split and partially kept.

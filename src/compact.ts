@@ -258,6 +258,13 @@ export function applyDecisions(
  * still carries only a stub per result, so this is what lets the "keep it
  * verbatim" question be answered from content rather than a byte count.
  */
+/**
+ * Tools whose result may be sampled for Jev. Only Read: its output is file
+ * content the session already chose to open, and seeing it is what lets Jev
+ * judge whether to keep it. Bash, MCP and other outputs are never sampled.
+ */
+const SAMPLED_TOOLS: ReadonlySet<string> = new Set(['Read']);
+
 export function peeksFor(
   messages: readonly Message[],
   candidates: readonly ToolCall[],
@@ -277,6 +284,7 @@ export function peeksFor(
     }
   }
   for (const call of candidates) {
+    if (!SAMPLED_TOOLS.has(call.tool)) continue;
     const body = text.get(call.tool_use_id);
     if (body === undefined) continue;
     peeks.set(

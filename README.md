@@ -40,13 +40,14 @@ built-in compaction summary with the original messages.
    stay (knowing it was made, with its input, still matters), and should the
    **result** stay verbatim (the assistant still needs its contents — for
    example to justify a claim it made, or because the output was not
-   deterministic or is costly to reproduce). The second question carries a
-   bounded sample of the result itself (`peekHeadChars` / `peekTailChars`,
+   deterministic or is costly to reproduce). For `Read` calls only, the second
+   question carries a bounded sample of the result itself (`peekHeadChars` / `peekTailChars`,
    tail-weighted for failures, cut on a whitespace boundary within 40 chars
    where one exists so a token is less likely to be split in half), so it is
-   answered from content rather than a byte count. The sample is not redacted
-   here — redaction of everything sent to Jev, state and questions alike, is a
-   separate concern handled centrally. The sample rides in the question, not
+   answered from content rather than a byte count. Bash, MCP and other results
+   are never sampled. Samples get only the best-effort, shape-only redaction in
+   `src/redact.ts`, so a plain `PASSWORD=...` line in a file that was read is
+   sent as-is. The sample rides in the question, not
    the state: the state is shared by every question and resent with every
    batch, so a sample there would be paid once per batch and would crowd out
    the history.

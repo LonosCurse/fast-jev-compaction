@@ -20,8 +20,8 @@ always re-run a tool or re-read a file").
 This patch changes two things at once, and this pre-registration covers their
 combined effect:
 
-1. **Sample** — the question now carries a bounded head+tail sample of the
-   actual result content (`peekHeadChars` / `peekTailChars`), instead of a
+1. **Sample** — for `Read` calls only (Drew, 2026-09-26), the question now
+   carries a bounded head+tail sample of the actual result content (`peekHeadChars` / `peekTailChars`), instead of a
    bare byte count.
 2. **Neutral wording** — the state's framing sentence and the result-keep
    proposition no longer tell Jev that dropping is free ("re-running would
