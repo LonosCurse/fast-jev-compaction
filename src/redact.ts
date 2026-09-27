@@ -65,6 +65,17 @@ export function redactSecrets(text: string, known: readonly string[] = []): Reda
   let count = 0;
   let out = text;
 
+  // Known values first: a shape rule could otherwise consume only part of one
+  // (`sk-v1.rest` → `[REDACTED].rest`), and the exact match would then miss the rest.
+  for (const secret of known) {
+    if (!secret) continue;
+    const parts = out.split(secret);
+    if (parts.length > 1) {
+      count += parts.length - 1;
+      out = parts.join(REDACTED);
+    }
+  }
+
   for (const pattern of PREFIXED_PATTERNS) {
     pattern.lastIndex = 0;
     out = out.replace(pattern, () => {
@@ -76,15 +87,6 @@ export function redactSecrets(text: string, known: readonly string[] = []): Reda
   const pem = redactPemBlocks(out);
   out = pem.text;
   count += pem.count;
-
-  for (const secret of known) {
-    if (!secret) continue;
-    const parts = out.split(secret);
-    if (parts.length > 1) {
-      count += parts.length - 1;
-      out = parts.join(REDACTED);
-    }
-  }
 
   return { text: out, count };
 }

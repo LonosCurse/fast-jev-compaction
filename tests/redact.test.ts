@@ -55,6 +55,11 @@ describe('redactSecrets: covered shapes only (Drew, 2026-09-26)', () => {
     expect(redactSecrets('key is plainwordsecret!', ['plainwordsecret!']).text).toBe(`key is ${REDACTED}`);
   });
 
+  it('redacts a known value whole even when a shape rule matches only its start (#11)', () => {
+    const key = 'sk-v1.actual-secret-material';
+    expect(redactSecrets(`Bearer ${key}`, [key])).toEqual({ text: `Bearer ${REDACTED}`, count: 1 });
+  });
+
   it.each([
     'PASSWORD=hunter2',
     '{"password":\n"hunter2"}',
