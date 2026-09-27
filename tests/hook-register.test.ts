@@ -63,7 +63,9 @@ function unreachable(name: string) {
 describe('register: session.compact dispatch', () => {
   it('leaves a subagent/fork transcript (agentId set) to core', async () => {
     const { on, handlers } = harness();
-    register(on, {});
+    // A key and a real transcript, so a missing guard would reach $.http.fetch
+    // instead of failing on the key and falling back to next.
+    register(on, { apiKey: 'test-key', minReductionRatio: 0, preserveRecentMessages: 1 });
     const handler = handlers.get('session.compact')!;
     const httpFetch = unreachable('$.http.fetch');
     const next = vi.fn(async (e: unknown) => ({ skip: 'core handled it' }));
@@ -73,7 +75,7 @@ describe('register: session.compact dispatch', () => {
       env: { get: vi.fn() },
       settings: { read: vi.fn() },
     };
-    const event = { trigger: 'auto', agentId: 'sub-1', messages: [] };
+    const event = { trigger: 'auto', agentId: 'sub-1', messages: transcript() };
     const out = await handler($, event, next);
     expect(next).toHaveBeenCalledWith(event);
     expect(out).toEqual({ skip: 'core handled it' });
