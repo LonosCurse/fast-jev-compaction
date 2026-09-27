@@ -1,5 +1,4 @@
 import { noulAnswer } from './request.js';
-import { resultPeek, salvagedResultText, type SalvageOptions } from './salvage.js';
 import { collectToolCalls, estimateTokens, fitState } from './state.js';
 import type {
   CallAnswer,
@@ -21,10 +20,8 @@ export const DEFAULT_OPTIONS: ResolvedCompactOptions = {
   preserveRecentMessages: 6,
   maxStateTokens: 25_000,
   maxRequestTokens: 30_000,
-  truncateHeadChars: 150,
-  salvageMaxChars: 600,
-  peekHeadChars: 200,
-  peekTailChars: 100,
+  truncateHeadChars: 300,
+  resultSampleChars: 300,
 };
 
 /** Tokens the request envelope (`model`, key names) adds around state and questions. */
@@ -53,17 +50,9 @@ export function resolveOptions(options: CompactOptions = {}): ResolvedCompactOpt
       0,
       Math.floor(finite(options.truncateHeadChars, DEFAULT_OPTIONS.truncateHeadChars)),
     ),
-    salvageMaxChars: Math.max(
+    resultSampleChars: Math.max(
       0,
-      Math.floor(finite(options.salvageMaxChars, DEFAULT_OPTIONS.salvageMaxChars)),
-    ),
-    peekHeadChars: Math.max(
-      0,
-      Math.floor(finite(options.peekHeadChars, DEFAULT_OPTIONS.peekHeadChars)),
-    ),
-    peekTailChars: Math.max(
-      0,
-      Math.floor(finite(options.peekTailChars, DEFAULT_OPTIONS.peekTailChars)),
+      Math.floor(finite(options.resultSampleChars, DEFAULT_OPTIONS.resultSampleChars)),
     ),
   };
 }
@@ -169,6 +158,14 @@ async function askBatch(
   );
 }
 
+function truncatedResultText(text: string, isError: boolean, headChars: number): string {
+  if (text.length <= headChars + 120) return text;
+  const head = headChars > 0 ? `${text.slice(0, headChars)}\n` : '';
+  return `${head}[fast-jev-compaction truncated ${text.length - headChars} chars of this tool result${
+    isError ? ' (error)' : ''
+  }; re-run the tool if needed]`;
+}
+
 /**
  * Rebuilds the conversation from the decisions. A dropped call disappears
  * together with its result; a dropped result keeps a bounded head and note.
@@ -179,7 +176,7 @@ export function applyDecisions(
   messages: readonly Message[],
   decisions: readonly CallDecision[],
   calls: readonly ToolCall[],
-  salvage: SalvageOptions,
+  headChars: number,
 ): Message[] {
   const byId = new Map(calls.map((call) => [call.id, call]));
   const actions = new Map<string, CallDecision['action']>();
@@ -200,10 +197,10 @@ export function applyDecisions(
       .filter((tool) => actions.get(tool.tool_use_id) !== 'drop_call')
       .map((tool) => {
         if (actions.get(tool.tool_use_id) !== 'drop_result') return tool;
-        const text = salvagedResultText(
+        const text = truncatedResultText(
           tool.text ?? '',
           tool.isError ?? false,
-          salvage,
+          headChars,
         );
         if ((tool.text ?? '') === text) return tool;
         const copy: ToolUse = {
@@ -219,7 +216,7 @@ export function applyDecisions(
       .filter((result) => actions.get(result.tool_use_id) !== 'drop_call')
       .map((result) => {
         if (actions.get(result.tool_use_id) !== 'drop_result') return result;
-        const text = salvagedResultText(result.text, result.isError ?? false, salvage);
+        const text = truncatedResultText(result.text, result.isError ?? false, headChars);
         return text === result.text
           ? result
           : {
@@ -254,10 +251,23 @@ export function applyDecisions(
 }
 
 /**
- * A bounded sample of each candidate's result, keyed by call id. The state
- * still carries only a stub per result, so this is what lets the "keep it
- * verbatim" question be answered from content rather than a byte count.
+ * A bounded sample of a tool result, for the question that asks whether the
+ * result is worth keeping verbatim. Plain slices, no whitespace snapping and
+ * no error weighting: two thirds of the budget from the start, the rest from
+ * the end, with a note for what was cut in between. A zero-length part is
+ * never taken with `slice(-0)`, which (unlike `slice(0, 0)`) returns the
+ * whole string.
  */
+export function resultSample(text: string, budget: number): string {
+  if (text.length <= budget) return text;
+  const head = Math.ceil((budget * 2) / 3);
+  const tail = Math.floor(budget / 3);
+  const headText = head > 0 ? text.slice(0, head) : '';
+  const tailText = tail > 0 ? text.slice(-tail) : '';
+  const omitted = text.length - headText.length - tailText.length;
+  return `${headText}\n[… ${omitted} chars omitted …]\n${tailText}`;
+}
+
 /**
  * Tools whose result may be sampled for Jev. Only Read: its output is file
  * content the session already chose to open, and seeing it is what lets Jev
@@ -265,13 +275,18 @@ export function applyDecisions(
  */
 const SAMPLED_TOOLS: ReadonlySet<string> = new Set(['Read']);
 
+/**
+ * A bounded sample of each candidate's result, keyed by call id. The state
+ * still carries only a stub per result, so this is what lets the "keep it
+ * verbatim" question be answered from content rather than a byte count.
+ */
 export function peeksFor(
   messages: readonly Message[],
   candidates: readonly ToolCall[],
-  options: Pick<ResolvedCompactOptions, 'peekHeadChars' | 'peekTailChars'>,
+  options: Pick<ResolvedCompactOptions, 'resultSampleChars'>,
 ): Map<string, string> {
   const peeks = new Map<string, string>();
-  if (options.peekHeadChars === 0 && options.peekTailChars === 0) return peeks;
+  if (options.resultSampleChars === 0) return peeks;
   const text = new Map<string, string>();
   for (const message of messages) {
     for (const tool of message.toolUses) {
@@ -287,13 +302,7 @@ export function peeksFor(
     if (!SAMPLED_TOOLS.has(call.tool)) continue;
     const body = text.get(call.tool_use_id);
     if (body === undefined) continue;
-    peeks.set(
-      call.id,
-      resultPeek(body, call.isError, {
-        headChars: options.peekHeadChars,
-        tailChars: options.peekTailChars,
-      }),
-    );
+    peeks.set(call.id, resultSample(body, options.resultSampleChars));
   }
   return peeks;
 }
@@ -356,10 +365,7 @@ export async function compact(
   const decisions = calls.map((call) =>
     decideCall(call, answers.get(call.id) ?? { keepCall: 1, keepResult: 1 }, resolved),
   );
-  const kept = applyDecisions(messages, decisions, calls, {
-    headChars: resolved.truncateHeadChars,
-    maxChars: resolved.salvageMaxChars,
-  });
+  const kept = applyDecisions(messages, decisions, calls, resolved.truncateHeadChars);
   return {
     messages: kept,
     decisions,

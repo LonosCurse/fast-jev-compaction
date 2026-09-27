@@ -41,11 +41,10 @@ built-in compaction summary with the original messages.
    **result** stay verbatim (the assistant still needs its contents — for
    example to justify a claim it made, or because the output was not
    deterministic or is costly to reproduce). For `Read` calls only, the second
-   question carries a bounded sample of the result itself (`peekHeadChars` / `peekTailChars`,
-   tail-weighted for failures, cut on a whitespace boundary within 40 chars
-   where one exists so a token is less likely to be split in half), so it is
-   answered from content rather than a byte count. Bash, MCP and other results
-   are never sampled. Samples get only the best-effort, shape-only redaction in
+   question carries a bounded sample of the result itself (`resultSampleChars`,
+   two thirds head and one third tail, plain slices), so it is answered from
+   content rather than a byte count. Bash, MCP and other results are never
+   sampled. Samples get only the best-effort, shape-only redaction in
    `src/redact.ts`, so a plain `PASSWORD=...` line in a file that was read is
    sent as-is. The sample rides in the question, not
    the state: the state is shared by every question and resent with every
@@ -57,10 +56,8 @@ built-in compaction summary with the original messages.
    concurrently and their answers are merged.
 6. Decisions per call, against `keepThreshold`:
    - `keepResult ≥ threshold` → keep call and result;
-   - else `keepCall ≥ threshold` → keep the call and replace the result with
-     its first `truncateHeadChars` characters, a one-line note, and the file
-     paths, URLs, identifiers and error lines salvaged from the rest of it
-     (within `salvageMaxChars`);
+   - else `keepCall ≥ threshold` → keep the call, truncate the result to its
+     first `truncateHeadChars` characters plus a one-line note;
    - else → remove the call together with its result.
 7. The message list is rebuilt: a message that loses all its content is
    removed, untouched messages are returned as the same objects, and no result
@@ -122,10 +119,8 @@ put it in a source file.
 | `preserveRecentMessages` | `6` | Newest messages never touched (the first is always kept) |
 | `maxStateTokens` | `25000` | Estimated token ceiling for the state |
 | `maxRequestTokens` | `30000` | Estimated ceiling for state plus one batch of questions |
-| `truncateHeadChars` | `150` | Characters from the start of a dropped tool result retained before its note |
-| `salvageMaxChars` | `600` | Ceiling on the identifiers and error lines salvaged from the rest of a dropped result |
-| `peekHeadChars` | `200` | Characters from the start of a result sampled into the question that judges it; 0 asks without a sample |
-| `peekTailChars` | `100` | Characters from the end of a result sampled into that question |
+| `truncateHeadChars` | `300` | Characters of a dropped tool result retained before its note |
+| `resultSampleChars` | `300` | Characters sampled (head and tail) from a `Read` result into the question that judges it; 0 asks without a sample |
 
 `result.stats` reports message and character counts before and after, the
 per-reason decision counts, the state size in estimated tokens, which fitting

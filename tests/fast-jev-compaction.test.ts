@@ -14,6 +14,7 @@ import {
   questionsFor,
   reductionRatio,
   resolveOptions,
+  resultSample,
   type HistoryToolCall,
   type JevAsker,
   type JevQuestions,
@@ -79,8 +80,8 @@ describe('options', () => {
       preserveRecentMessages: 6,
       maxStateTokens: 25_000,
       maxRequestTokens: 30_000,
-      truncateHeadChars: 150,
-      salvageMaxChars: 600,
+      truncateHeadChars: 300,
+      resultSampleChars: 300,
     });
     expect(resolveOptions({
       keepThreshold: Number.NaN,
@@ -284,7 +285,7 @@ describe('decisions', () => {
       decideCall(calls[1]!, { keepCall: 0.9, keepResult: 0.1 }, options),
       decideCall(calls[2]!, { keepCall: 0.9, keepResult: 0.9 }, options),
     ];
-    const kept = applyDecisions(messages, decisions, calls, { headChars: 300, maxChars: 600 });
+    const kept = applyDecisions(messages, decisions, calls, 300);
 
     expect(kept.map((m) => m.text || m.toolUses[0]?.tool_use_id || m.toolResults?.[0]?.tool_use_id)).toEqual([
       'Never edit anything under src/generated. Fix the failing test.',
@@ -299,10 +300,10 @@ describe('decisions', () => {
     expect(kept[0]).toBe(messages[0]);
     expect(kept[2]).not.toBe(messages[4]);
     expect(kept[2]?.toolUses[0]?.text).toMatch(
-      new RegExp(`^${'x'.repeat(300)}\\n\\[fast-jev-compaction dropped 1700 chars`),
+      new RegExp(`^${'x'.repeat(300)}\\n\\[fast-jev-compaction truncated 1700 chars`),
     );
     expect(kept[3]?.toolResults?.[0]?.text).toMatch(
-      new RegExp(`^${'x'.repeat(300)}\\n\\[fast-jev-compaction dropped 1700 chars`),
+      new RegExp(`^${'x'.repeat(300)}\\n\\[fast-jev-compaction truncated 1700 chars`),
     );
     expect(kept[2]).not.toBe(messages[4]);
     expect(kept[3]).not.toBe(messages[5]);
@@ -312,7 +313,7 @@ describe('decisions', () => {
     const shortMessages = transcript();
     shortMessages[4]!.toolUses[0]!.text = 'y'.repeat(100);
     shortMessages[5]!.toolResults![0]!.text = 'y'.repeat(100);
-    const shortKept = applyDecisions(shortMessages, decisions, calls, { headChars: 300, maxChars: 600 });
+    const shortKept = applyDecisions(shortMessages, decisions, calls, 300);
     expect(shortKept[2]).toBe(shortMessages[4]);
     expect(shortKept[3]).toBe(shortMessages[5]);
   });
@@ -358,20 +359,6 @@ describe('decisions', () => {
     ]);
   });
 
-  it('salvages identifiers a dropped result would otherwise have taken with it', () => {
-    const messages = transcript();
-    messages[2]!.toolResults![0]!.text = `${'filler line\n'.repeat(200)}src/buried/Thing.tsx\n`;
-    const calls = collectToolCalls(messages, 0);
-    const decisions = [decideCall(calls[0]!, { keepCall: 0.9, keepResult: 0.1 }, options)];
-
-    const kept = applyDecisions(messages, decisions, calls, {
-      headChars: 150,
-      maxChars: 600,
-    });
-
-    expect(kept[2]?.toolResults?.[0]?.text).toContain('src/buried/Thing.tsx');
-  });
-
   it('honours truncateHeadChars, including a zero head', () => {
     const messages = transcript();
     const calls = collectToolCalls(messages, 0);
@@ -379,16 +366,42 @@ describe('decisions', () => {
     const original = messages[2]!.toolResults![0]!.text;
     const total = original.length;
 
-    const kept = applyDecisions(messages, decisions, calls, { headChars: 50, maxChars: 0 });
+    const kept = applyDecisions(messages, decisions, calls, 50);
     expect(kept[2]?.toolResults?.[0]?.text).toBe(
-      `${original.slice(0, 50)}\n[fast-jev-compaction dropped ${total - 50} chars of this tool result; re-run the tool if needed]`,
+      `${original.slice(0, 50)}\n[fast-jev-compaction truncated ${total - 50} chars of this tool result; re-run the tool if needed]`,
     );
     expect(kept[1]?.toolUses[0]?.text).toBe(kept[2]?.toolResults?.[0]?.text);
 
-    const noHead = applyDecisions(messages, decisions, calls, { headChars: 0, maxChars: 0 });
+    const noHead = applyDecisions(messages, decisions, calls, 0);
     expect(noHead[2]?.toolResults?.[0]?.text).toBe(
-      `[fast-jev-compaction dropped ${total} chars of this tool result; re-run the tool if needed]`,
+      `[fast-jev-compaction truncated ${total} chars of this tool result; re-run the tool if needed]`,
     );
+  });
+});
+
+describe('resultSample', () => {
+  it('returns a short input whole', () => {
+    expect(resultSample('short text', 300)).toBe('short text');
+  });
+
+  it('samples a long input with a head, a tail and an omitted-count marker, staying within budget', () => {
+    const text = `${'H'.repeat(1000)}${'T'.repeat(1000)}`;
+
+    const sample = resultSample(text, 300);
+
+    expect(sample).toContain('H'.repeat(200));
+    expect(sample).toContain('T'.repeat(100));
+    expect(sample).toMatch(/\[… \d+ chars omitted …\]/);
+    const [head, , tail] = sample.split(/\n\[… \d+ chars omitted …\]\n/);
+    expect((head?.length ?? 0) + (tail?.length ?? 0)).toBeLessThanOrEqual(300);
+  });
+
+  it('never turns a zero-length tail into the whole string via slice(-0)', () => {
+    const text = 'x'.repeat(10);
+
+    const sample = resultSample(text, 1);
+
+    expect(sample).not.toContain('x'.repeat(10));
   });
 });
 
@@ -414,6 +427,30 @@ describe('compact', () => {
     await compact(messages, recorder, { preserveRecentMessages: 0 });
 
     expect(JSON.stringify(sent)).toContain('DISTINCTIVE-TAIL');
+  });
+
+  it('sends no sample when resultSampleChars is 0', async () => {
+    const messages = transcript();
+    messages[2]!.toolResults![0]!.text = `${'filler\n'.repeat(200)}DISTINCTIVE-TAIL`;
+    const sent: JevQuestions[] = [];
+    const recorder: JevAsker = {
+      async ask(_state, questions: JevQuestions) {
+        sent.push(questions);
+        return {
+          answers: Object.fromEntries(
+            Object.keys(questions).map((key) => [
+              key,
+              { type: 'noul' as const, noul: 0.9 },
+            ]),
+          ),
+        };
+      },
+    };
+
+    await compact(messages, recorder, { preserveRecentMessages: 0, resultSampleChars: 0 });
+
+    expect(sent.length).toBeGreaterThan(0);
+    expect(JSON.stringify(sent)).not.toContain('DISTINCTIVE-TAIL');
   });
 
   it('never samples a non-Read result', async () => {

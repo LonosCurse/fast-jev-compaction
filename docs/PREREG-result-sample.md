@@ -21,8 +21,8 @@ This patch changes two things at once, and this pre-registration covers their
 combined effect:
 
 1. **Sample** — for `Read` calls only (Drew, 2026-09-26), the question now
-   carries a bounded head+tail sample of the actual result content (`peekHeadChars` / `peekTailChars`), instead of a
-   bare byte count.
+   carries a bounded head+tail sample of the actual result content
+   (`resultSampleChars`), instead of a bare byte count.
 2. **Neutral wording** — the state's framing sentence and the result-keep
    proposition no longer tell Jev that dropping is free ("re-running would
    not do"). They now say re-running costs time and tokens and may return
@@ -64,8 +64,7 @@ Where:
   - the assistant re-ran the same command (same tool + same normalized
     input), or
   - the assistant's subsequent text quoted a substring of that result's
-    output (e.g. an error string, a file excerpt, an identifier salvage
-    would also have found).
+    output (e.g. an error string, a file excerpt, an identifier).
 - **"tokens kept"** = the estimated token cost (via this repo's
   `estimateTokens`) of every result actually kept verbatim under that
   condition, summed across the replay set.
@@ -83,8 +82,8 @@ without also saying yes to everything."
 current `plugin.json`/`marketplace.json` version as of this patch's base
 commit, `fork/main` at `9441f27`) on the *same* replay set: old
 `STATE_CONTEXT` wording, old `result_*` proposition wording (with the
-"re-running the tool would not do" conjunct), and no `peekHeadChars` /
-`peekTailChars` sample (equivalent to this patch with both set to `0`, which
+"re-running the tool would not do" conjunct), and no `resultSampleChars`
+sample (equivalent to this patch with `resultSampleChars` set to `0`, which
 removes the sample but does **not** revert the wording — see the caveat
 below and the PR description).
 
@@ -108,8 +107,8 @@ separate, current preflight pass immediately before that run.
 
 ## Re-registration requirement
 
-Any change to the question wording, the `keepThreshold`, the `peekHeadChars`
-/ `peekTailChars` sample sizes, the metric definition, the baseline, or the
+Any change to the question wording, the `keepThreshold`, the
+`resultSampleChars` sample size, the metric definition, the baseline, or the
 pass bar, made **after this file is committed**, requires re-registering
 (editing this file and noting the change and reason) **before** the next run
 that would be evaluated against it. A run against a stale registration is not
@@ -117,15 +116,15 @@ evidence for or against the hypothesis as stated here.
 
 ## Known caveat for whoever writes the PR description
 
-Setting `peekHeadChars` and `peekTailChars` to `0` disables the sample
-mechanism exactly (`peeksFor` returns no peeks, so `questionsFor` never
-appends a sample block) — that part of "restores old behaviour" is true.
-It does **not** revert the neutral wording in `STATE_CONTEXT` or the
-`result_*` proposition, both of which apply unconditionally regardless of
-peek size, because reverting them would undo the actual fix. It also does not
-revert the `a99570a` salvage commit's own unconditional wording change (the
-dropped-result note now says "dropped" rather than upstream's original
-"truncated", and `truncateHeadChars` defaults to 150 rather than 300) — that
-was already true before this patch and is unrelated to peek size. The PR text
-should say "setting the peek sizes to 0 disables the sample" rather than
-"restores old behaviour," or spell out these two carve-outs.
+Setting `resultSampleChars` to `0` disables the sample mechanism exactly
+(`peeksFor` returns no peeks, so `questionsFor` never appends a sample block)
+— that part of "restores old behaviour" is true. It does **not** revert the
+neutral wording in `STATE_CONTEXT` or the `result_*` proposition, both of
+which apply unconditionally regardless of sample size, because reverting them
+would undo the actual fix. The PR text should say "setting the sample size to
+0 disables the sample" rather than "restores old behaviour," or spell out
+that carve-out. The separate recovery mechanism this branch once carried (a
+head-truncation replacement that scanned a dropped result for file paths,
+URLs and error lines) has since been removed as YAGNI (see the compaction
+commit history); `truncateHeadChars` is back to upstream's plain head
+truncation and its default of `300`, unrelated to `resultSampleChars`.

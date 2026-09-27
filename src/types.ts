@@ -103,21 +103,14 @@ export interface CompactOptions {
   maxStateTokens?: number;
   /** Estimated token ceiling for state plus one batch of questions. Default 30000. */
   maxRequestTokens?: number;
-  /** Characters of a dropped tool result's head to retain. Default 150. */
+  /** Characters of a dropped tool result to retain. Default 300. */
   truncateHeadChars?: number;
   /**
-   * Ceiling on the identifiers and error lines salvaged from the rest of a
-   * dropped result. Default 600; zero keeps the head only.
+   * Characters sampled (head and tail) from a `Read` result and shown to Jev
+   * in the question that asks whether the result is worth keeping. Default
+   * 300; zero asks without a sample, as upstream did.
    */
-  salvageMaxChars?: number;
-  /**
-   * Characters sampled from the start of a tool result and shown to Jev in
-   * the question that asks whether the result is worth keeping. Default 200;
-   * zero asks without a sample, as upstream did.
-   */
-  peekHeadChars?: number;
-  /** Characters sampled from the end of a tool result. Default 100. */
-  peekTailChars?: number;
+  resultSampleChars?: number;
 }
 
 export interface ResolvedCompactOptions {
@@ -127,9 +120,7 @@ export interface ResolvedCompactOptions {
   maxStateTokens: number;
   maxRequestTokens: number;
   truncateHeadChars: number;
-  salvageMaxChars: number;
-  peekHeadChars: number;
-  peekTailChars: number;
+  resultSampleChars: number;
 }
 
 export interface CompactResult {
