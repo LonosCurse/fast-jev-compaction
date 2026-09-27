@@ -11,8 +11,10 @@ import {
   fitState,
   JevClient,
   parseJevResponse,
+  questionsFor,
   reductionRatio,
   resolveOptions,
+  resultSample,
   type HistoryToolCall,
   type JevAsker,
   type JevQuestions,
@@ -79,6 +81,7 @@ describe('options', () => {
       maxStateTokens: 25_000,
       maxRequestTokens: 30_000,
       truncateHeadChars: 300,
+      resultSampleChars: 300,
     });
     expect(resolveOptions({
       keepThreshold: Number.NaN,
@@ -156,10 +159,10 @@ describe('state fitting', () => {
     ];
     const { state, stage, tokens } = fitState(messages, collectToolCalls(messages, 0), {
       ...fit,
-      maxStateTokens: 300,
+      maxStateTokens: 350,
     });
     expect(stage).toBe('inputs<=200');
-    expect(tokens).toBeLessThanOrEqual(300);
+    expect(tokens).toBeLessThanOrEqual(350);
     expect(state.history[0]?.text).toBe('start');
     expect((state.history[1]?.tool_calls?.[0] as HistoryToolCall).input.length).toBeLessThanOrEqual(200);
   });
@@ -315,6 +318,47 @@ describe('decisions', () => {
     expect(shortKept[3]).toBe(shortMessages[5]);
   });
 
+  it('drops a sample that will not fit rather than failing the compaction', () => {
+    const messages = transcript();
+    const calls = collectToolCalls(messages, 0);
+    const peeks = new Map([[calls[0]!.id, 'P'.repeat(4000)]]);
+
+    const batches = batchCalls([calls[0]!], 0, { maxRequestTokens: 400 }, peeks);
+
+    expect(batches).toHaveLength(1);
+    expect(peeks.has(calls[0]!.id)).toBe(false);
+  });
+
+  it('still fails when even the bare question will not fit', () => {
+    const messages = transcript();
+    const calls = collectToolCalls(messages, 0);
+
+    expect(() => batchCalls([calls[0]!], 0, { maxRequestTokens: 5 }, new Map())).toThrow(
+      /no room for questions/,
+    );
+  });
+
+  it('puts a sample of the result into the question that judges it', () => {
+    const messages = transcript();
+    const calls = collectToolCalls(messages, 0);
+
+    const questions = questionsFor(calls[0]!, 'DISTINCTIVE-SAMPLE');
+
+    expect(JSON.stringify(questions[`result_${calls[0]!.id}`])).toContain(
+      'DISTINCTIVE-SAMPLE',
+    );
+  });
+
+  it('asks about a result with no sample without breaking', () => {
+    const messages = transcript();
+    const calls = collectToolCalls(messages, 0);
+
+    expect(Object.keys(questionsFor(calls[0]!))).toEqual([
+      `call_${calls[0]!.id}`,
+      `result_${calls[0]!.id}`,
+    ]);
+  });
+
   it('honours truncateHeadChars, including a zero head', () => {
     const messages = transcript();
     const calls = collectToolCalls(messages, 0);
@@ -335,7 +379,101 @@ describe('decisions', () => {
   });
 });
 
+describe('resultSample', () => {
+  it('returns a short input whole', () => {
+    expect(resultSample('short text', 300)).toBe('short text');
+  });
+
+  it('samples a long input with a head, a tail and an omitted-count marker, staying within budget', () => {
+    const text = `${'H'.repeat(1000)}${'T'.repeat(1000)}`;
+
+    const sample = resultSample(text, 300);
+
+    expect(sample).toContain('H'.repeat(200));
+    expect(sample).toContain('T'.repeat(100));
+    expect(sample).toMatch(/\[… \d+ chars omitted …\]/);
+    const [head, , tail] = sample.split(/\n\[… \d+ chars omitted …\]\n/);
+    expect((head?.length ?? 0) + (tail?.length ?? 0)).toBeLessThanOrEqual(300);
+  });
+
+  it('never turns a zero-length tail into the whole string via slice(-0)', () => {
+    const text = 'x'.repeat(10);
+
+    const sample = resultSample(text, 1);
+
+    expect(sample).not.toContain('x'.repeat(10));
+  });
+});
+
 describe('compact', () => {
+  it('samples the real result text into the questions it sends', async () => {
+    const messages = transcript();
+    messages[2]!.toolResults![0]!.text = `${'filler\n'.repeat(200)}DISTINCTIVE-TAIL`;
+    const sent: JevQuestions[] = [];
+    const recorder: JevAsker = {
+      async ask(_state, questions: JevQuestions) {
+        sent.push(questions);
+        return {
+          answers: Object.fromEntries(
+            Object.keys(questions).map((key) => [
+              key,
+              { type: 'noul' as const, noul: 0.9 },
+            ]),
+          ),
+        };
+      },
+    };
+
+    await compact(messages, recorder, { preserveRecentMessages: 0 });
+
+    expect(JSON.stringify(sent)).toContain('DISTINCTIVE-TAIL');
+  });
+
+  it('sends no sample when resultSampleChars is 0', async () => {
+    const messages = transcript();
+    messages[2]!.toolResults![0]!.text = `${'filler\n'.repeat(200)}DISTINCTIVE-TAIL`;
+    const sent: JevQuestions[] = [];
+    const recorder: JevAsker = {
+      async ask(_state, questions: JevQuestions) {
+        sent.push(questions);
+        return {
+          answers: Object.fromEntries(
+            Object.keys(questions).map((key) => [
+              key,
+              { type: 'noul' as const, noul: 0.9 },
+            ]),
+          ),
+        };
+      },
+    };
+
+    await compact(messages, recorder, { preserveRecentMessages: 0, resultSampleChars: 0 });
+
+    expect(sent.length).toBeGreaterThan(0);
+    expect(JSON.stringify(sent)).not.toContain('DISTINCTIVE-TAIL');
+  });
+
+  it('never samples a non-Read result', async () => {
+    const messages = transcript();
+    messages[7]!.toolResults![0]!.text = 'PASSWORD=hunter2 printed by the build';
+    const sent: JevQuestions[] = [];
+    const recorder: JevAsker = {
+      async ask(_state, questions: JevQuestions) {
+        sent.push(questions);
+        return {
+          answers: Object.fromEntries(
+            Object.keys(questions).map((key) => [key, { type: 'noul' as const, noul: 0.9 }]),
+          ),
+        };
+      },
+    };
+
+    await compact(messages, recorder, { preserveRecentMessages: 0 });
+
+    expect(sent.length).toBeGreaterThan(0);
+    expect(JSON.stringify(sent)).not.toContain('hunter2');
+  });
+
   it('resends the full state with every batch and merges the answers', async () => {
     const seen: Seen[] = [];
     const messages = transcript();
@@ -347,7 +485,7 @@ describe('compact', () => {
     const output = await compact(
       messages,
       fakeJev((name) => (name.startsWith('call_') ? 0.9 : 0.1), seen),
-      { preserveRecentMessages: 1, maxRequestTokens: stateTokens + 150 },
+      { preserveRecentMessages: 1, maxRequestTokens: stateTokens + 200 },
     );
 
     expect(output.stats.requests).toBe(seen.length);

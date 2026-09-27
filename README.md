@@ -38,8 +38,18 @@ built-in compaction summary with the original messages.
    calibrated to land a little above the counts Jev reports.
 4. For every non-pinned call Jev gets two `noul` questions: should the **call**
    stay (knowing it was made, with its input, still matters), and should the
-   **result** stay verbatim (its contents are still needed and re-running the
-   tool would not do).
+   **result** stay verbatim (the assistant still needs its contents — for
+   example to justify a claim it made, or because the output was not
+   deterministic or is costly to reproduce). For `Read` calls only, the second
+   question carries a bounded sample of the result itself (`resultSampleChars`,
+   two thirds head and one third tail, plain slices), so it is answered from
+   content rather than a byte count. Bash, MCP and other results are never
+   sampled. Samples get only the best-effort, shape-only redaction in
+   `src/redact.ts`, so a plain `PASSWORD=...` line in a file that was read is
+   sent as-is. The sample rides in the question, not
+   the state: the state is shared by every question and resent with every
+   batch, so a sample there would be paid once per batch and would crowd out
+   the history.
 5. Questions are split into as many requests as needed so state plus questions
    stays under `maxRequestTokens` (30k by default, under Jev's 32k request
    limit). The same full state is resent with every request; requests run
@@ -110,6 +120,7 @@ put it in a source file.
 | `maxStateTokens` | `25000` | Estimated token ceiling for the state |
 | `maxRequestTokens` | `30000` | Estimated ceiling for state plus one batch of questions |
 | `truncateHeadChars` | `300` | Characters of a dropped tool result retained before its note |
+| `resultSampleChars` | `300` | Characters sampled (head and tail) from a `Read` result into the question that judges it; 0 asks without a sample |
 
 `result.stats` reports message and character counts before and after, the
 per-reason decision counts, the state size in estimated tokens, which fitting
@@ -121,7 +132,8 @@ stage was needed, and the number of requests.
   or shortened in the output (they are only abridged in the state Jev sees).
 - Token sizes are estimates from character counts, not a tokenizer.
 - Calibration is at the request level; a probability is not a proof that a
-  result is safe to delete. The assistant can always re-run the tool.
+  result is safe to delete. The assistant can re-run a dropped tool, at a cost
+  in time and tokens, and the output may differ.
 - The full state is repeated with every request, so a history near the state
   ceiling costs one request per handful of questions.
 - Kept messages are handed back without the engine's `handle`, so a plugin

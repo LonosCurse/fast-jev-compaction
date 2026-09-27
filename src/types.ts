@@ -105,6 +105,12 @@ export interface CompactOptions {
   maxRequestTokens?: number;
   /** Characters of a dropped tool result to retain. Default 300. */
   truncateHeadChars?: number;
+  /**
+   * Characters sampled (head and tail) from a `Read` result and shown to Jev
+   * in the question that asks whether the result is worth keeping. Default
+   * 300; zero asks without a sample, as upstream did.
+   */
+  resultSampleChars?: number;
 }
 
 export interface ResolvedCompactOptions {
@@ -114,6 +120,7 @@ export interface ResolvedCompactOptions {
   maxStateTokens: number;
   maxRequestTokens: number;
   truncateHeadChars: number;
+  resultSampleChars: number;
 }
 
 export interface CompactResult {

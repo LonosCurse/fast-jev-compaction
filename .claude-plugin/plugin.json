@@ -52,6 +52,12 @@
       "description": "Characters of a tool result kept when Jev decides its full output is no longer needed; 0 keeps only the note.",
       "default": 300
     },
+    "resultSampleChars": {
+      "type": "number",
+      "title": "Result sample size",
+      "description": "Characters sampled (two thirds head, one third tail) from a Read result and shown to Jev when it judges whether that result is worth keeping; 0 asks without a sample.",
+      "default": 300
+    },
     "model": {
       "type": "string",
       "title": "Jev model",

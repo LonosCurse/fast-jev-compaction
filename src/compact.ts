@@ -21,6 +21,7 @@ export const DEFAULT_OPTIONS: ResolvedCompactOptions = {
   maxStateTokens: 25_000,
   maxRequestTokens: 30_000,
   truncateHeadChars: 300,
+  resultSampleChars: 300,
 };
 
 /** Tokens the request envelope (`model`, key names) adds around state and questions. */
@@ -49,11 +50,25 @@ export function resolveOptions(options: CompactOptions = {}): ResolvedCompactOpt
       0,
       Math.floor(finite(options.truncateHeadChars, DEFAULT_OPTIONS.truncateHeadChars)),
     ),
+    resultSampleChars: Math.max(
+      0,
+      Math.floor(finite(options.resultSampleChars, DEFAULT_OPTIONS.resultSampleChars)),
+    ),
   };
 }
 
-/** The two `noul` questions asked about one call: keep the call, keep its result. */
-export function questionsFor(call: ToolCall): JevQuestions {
+/**
+ * The two `noul` questions asked about one call: keep the call, keep its
+ * result. `peek` is a bounded sample of the result, and it belongs here
+ * rather than in the state: every question is evaluated in isolation against
+ * the same shared state, so a sample put in the state would be re-sent with
+ * every batch and would eat the budget `fitState` needs for the history.
+ */
+export function questionsFor(call: ToolCall, peek?: string): JevQuestions {
+  const sample =
+    peek !== undefined && peek.length > 0
+      ? `\nA sample of that output, head and tail, follows between the markers. Judge the whole output from it.\n<<<\n${peek}\n>>>`
+      : '';
   return {
     [`call_${call.id}`]: {
       type: 'noul',
@@ -61,7 +76,7 @@ export function questionsFor(call: ToolCall): JevQuestions {
     },
     [`result_${call.id}`]: {
       type: 'noul',
-      instructions: `The full output of tool call ${call.id} (${call.tool}, ${call.resultChars} chars) should stay in the history verbatim: the assistant still needs its contents and re-running the tool would not do`,
+      instructions: `The full output of tool call ${call.id} (${call.tool}, ${call.resultChars} chars) should stay in the history verbatim: the assistant still needs this result's contents — for example to justify a claim it made, or because the output was not deterministic or is costly to reproduce${sample}`,
     },
   };
 }
@@ -74,22 +89,29 @@ export function batchCalls(
   calls: readonly ToolCall[],
   stateTokens: number,
   options: Pick<ResolvedCompactOptions, 'maxRequestTokens'>,
+  peeks: Map<string, string> = new Map(),
 ): ToolCall[][] {
   const budget = options.maxRequestTokens - stateTokens - REQUEST_OVERHEAD_TOKENS;
   const batches: ToolCall[][] = [];
   let current: ToolCall[] = [];
   let currentTokens = 0;
   for (const call of calls) {
-    const tokens = estimateTokens(JSON.stringify(questionsFor(call)));
+    let tokens = estimateTokens(JSON.stringify(questionsFor(call, peeks.get(call.id))));
     if (current.length > 0 && currentTokens + tokens > budget) {
       batches.push(current);
       current = [];
       currentTokens = 0;
     }
     if (current.length === 0 && tokens > budget) {
-      throw new Error(
-        `state leaves no room for questions (~${stateTokens} of ${options.maxRequestTokens} tokens)`,
-      );
+      // The sample is an improvement, not a requirement: drop it for this
+      // call and ask the bare question rather than failing the compaction.
+      peeks.delete(call.id);
+      tokens = estimateTokens(JSON.stringify(questionsFor(call)));
+      if (tokens > budget) {
+        throw new Error(
+          `state leaves no room for questions (~${stateTokens} of ${options.maxRequestTokens} tokens)`,
+        );
+      }
     }
     current.push(call);
     currentTokens += tokens;
@@ -118,8 +140,12 @@ async function askBatch(
   asker: JevAsker,
   state: CompactionState,
   batch: readonly ToolCall[],
+  peeks: Map<string, string>,
 ): Promise<Map<string, CallAnswer>> {
-  const questions: JevQuestions = Object.assign({}, ...batch.map(questionsFor));
+  const questions: JevQuestions = Object.assign(
+    {},
+    ...batch.map((call) => questionsFor(call, peeks.get(call.id))),
+  );
   const { answers } = await asker.ask(state, questions);
   return new Map(
     batch.map((call) => [
@@ -224,6 +250,63 @@ export function applyDecisions(
   return kept;
 }
 
+/**
+ * A bounded sample of a tool result, for the question that asks whether the
+ * result is worth keeping verbatim. Plain slices, no whitespace snapping and
+ * no error weighting: two thirds of the budget from the start, the rest from
+ * the end, with a note for what was cut in between. A zero-length part is
+ * never taken with `slice(-0)`, which (unlike `slice(0, 0)`) returns the
+ * whole string.
+ */
+export function resultSample(text: string, budget: number): string {
+  if (text.length <= budget) return text;
+  const head = Math.ceil((budget * 2) / 3);
+  const tail = Math.floor(budget / 3);
+  const headText = head > 0 ? text.slice(0, head) : '';
+  const tailText = tail > 0 ? text.slice(-tail) : '';
+  const omitted = text.length - headText.length - tailText.length;
+  return `${headText}\n[… ${omitted} chars omitted …]\n${tailText}`;
+}
+
+/**
+ * Tools whose result may be sampled for Jev. Only Read: its output is file
+ * content the session already chose to open, and seeing it is what lets Jev
+ * judge whether to keep it. Bash, MCP and other outputs are never sampled.
+ */
+const SAMPLED_TOOLS: ReadonlySet<string> = new Set(['Read']);
+
+/**
+ * A bounded sample of each candidate's result, keyed by call id. The state
+ * still carries only a stub per result, so this is what lets the "keep it
+ * verbatim" question be answered from content rather than a byte count.
+ */
+export function peeksFor(
+  messages: readonly Message[],
+  candidates: readonly ToolCall[],
+  options: Pick<ResolvedCompactOptions, 'resultSampleChars'>,
+): Map<string, string> {
+  const peeks = new Map<string, string>();
+  if (options.resultSampleChars === 0) return peeks;
+  const text = new Map<string, string>();
+  for (const message of messages) {
+    for (const tool of message.toolUses) {
+      if (tool.text !== undefined && tool.text.length > 0) {
+        text.set(tool.tool_use_id, tool.text);
+      }
+    }
+    for (const result of message.toolResults ?? []) {
+      if (result.text.length > 0) text.set(result.tool_use_id, result.text);
+    }
+  }
+  for (const call of candidates) {
+    if (!SAMPLED_TOOLS.has(call.tool)) continue;
+    const body = text.get(call.tool_use_id);
+    if (body === undefined) continue;
+    peeks.set(call.id, resultSample(body, options.resultSampleChars));
+  }
+  return peeks;
+}
+
 /** Characters of text, tool input and tool output a message holds. */
 export function messageChars(message: Message): number {
   let total = message.text.length;
@@ -271,9 +354,10 @@ export async function compact(
   if (candidates.length > 0) {
     const state = fitState(messages, calls, resolved);
     fitted = state;
-    batches = batchCalls(candidates, state.tokens, resolved);
+    const peeks = peeksFor(messages, candidates, resolved);
+    batches = batchCalls(candidates, state.tokens, resolved, peeks);
     const answered = await Promise.all(
-      batches.map((batch) => askBatch(asker, state.state, batch)),
+      batches.map((batch) => askBatch(asker, state.state, batch, peeks)),
     );
     for (const map of answered) for (const [id, answer] of map) answers.set(id, answer);
   }
@@ -281,12 +365,7 @@ export async function compact(
   const decisions = calls.map((call) =>
     decideCall(call, answers.get(call.id) ?? { keepCall: 1, keepResult: 1 }, resolved),
   );
-  const kept = applyDecisions(
-    messages,
-    decisions,
-    calls,
-    resolved.truncateHeadChars,
-  );
+  const kept = applyDecisions(messages, decisions, calls, resolved.truncateHeadChars);
   return {
     messages: kept,
     decisions,
