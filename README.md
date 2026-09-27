@@ -100,6 +100,9 @@ can be passed in as is.
 To bring your own transport, implement `JevAsker` (one `ask(state, questions)`
 method) and call `compact(messages, asker, options)`; `buildJevRequest` and
 `parseJevResponse` give you the HTTP request body and response validation.
+`buildJevRequest` sends the state and questions exactly as given: only
+`JevClient` and the Claude Code hook apply the redaction described under
+Limitations, so a custom `JevAsker` gets none.
 The building blocks (`collectToolCalls`, `fitState`, `batchCalls`,
 `decideCall`, `applyDecisions`) are exported too.
 
@@ -142,7 +145,8 @@ stage was needed, and the number of requests.
   newest assistant turn carried extended thinking the API rejects the first
   request after compaction; Claude Code strips thinking blocks and retries.
 - Credential redaction (`src/redact.ts`) before the Jev request is a
-  best-effort safety net, not a guarantee. It covers only string values (never
+  best-effort safety net, not a guarantee, and runs only in `JevClient` and
+  the Claude Code hook. It covers only string values (never
   object keys) with a recognisable token shape: prefixed tokens (`sk-`,
   `sk_live_`/`sk_test_`, `ghp_`, `gho_`, `github_pat_`, `xox[bap]-`, `AKIA`),
   PEM/PGP private-key blocks, and the plugin's own API key. It does not parse
