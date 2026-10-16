@@ -79,7 +79,11 @@ reduction, per-reason counts, state size and request count; a per-call
 `decisions:` line with both probabilities is logged for diagnosis. The
 `turn.complete` hook requests
 compaction when `context.percent` reaches `compactAtPercent`, with an
-in-flight guard.
+in-flight guard. It queues `/compact` through `$.command.run`, which runs once
+the session is idle, rather than calling `$.session.compact()`: that call
+rejects while a turn is in flight (a queued message or task notification can
+start the next turn first) and is unavailable in SDK sessions such as the
+Claude desktop app. The queued run shows as `/compact` in the transcript.
 
 ## Scope and caveat
 

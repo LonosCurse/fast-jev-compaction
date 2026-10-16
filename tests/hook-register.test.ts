@@ -121,6 +121,20 @@ describe('register: session.compact dispatch', () => {
 });
 
 describe('register: turn.complete dispatch', () => {
+  const answered = { answer: '', durationMs: 0, isAborted: false, turnId: 't1', reason: 'answer' };
+
+  /** A `$` for turn.complete; `$.session.compact` is unreachable, since it rejects mid-turn. */
+  function turn$(percent: number, run: (...args: unknown[]) => Promise<unknown>) {
+    const logs: string[] = [];
+    const toasts: string[] = [];
+    const $ = {
+      session: { usage: vi.fn(async () => ({ context: { percent } })), compact: unreachable('$.session.compact') },
+      command: { run: vi.fn(run) },
+      ui: { log: (t: string) => logs.push(t), toast: (t: string) => toasts.push(t) },
+    };
+    return { $, logs, toasts };
+  }
+
   it.each([
     { label: 'agentId set (subagent turn)', extra: { agentId: 'sub-1', reason: 'answer' } },
     { label: "reason !== 'answer'", extra: { reason: 'aborted' } },
@@ -129,13 +143,13 @@ describe('register: turn.complete dispatch', () => {
     register(on, {});
     const handler = handlers.get('turn.complete')!;
     const usage = unreachable('$.session.usage');
-    const compact = unreachable('$.session.compact');
+    const run = unreachable('$.command.run');
     const next = vi.fn(async (e: unknown) => e);
-    const $ = { session: { usage, compact }, ui: { log: vi.fn(), toast: vi.fn() } };
-    const event = { answer: '', durationMs: 0, isAborted: false, turnId: 't1', ...extra };
+    const $ = { session: { usage }, command: { run }, ui: { log: vi.fn(), toast: vi.fn() } };
+    const event = { ...answered, ...extra };
     await handler($, event, next);
     expect(usage).not.toHaveBeenCalled();
-    expect(compact).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
     expect(next).toHaveBeenCalledWith(event);
   });
 
@@ -148,57 +162,68 @@ describe('register: turn.complete dispatch', () => {
       resolveUsage = res;
     });
     const usage = vi.fn(() => usageGate);
-    const compact = vi.fn();
-    const $ = { session: { usage, compact }, ui: { log: vi.fn(), toast: vi.fn() } };
+    const run = vi.fn();
+    const $ = { session: { usage }, command: { run }, ui: { log: vi.fn(), toast: vi.fn() } };
     const next1 = vi.fn(async (e: unknown) => 'n1');
     const next2 = vi.fn(async (e: unknown) => 'n2');
-    const event = { answer: '', durationMs: 0, isAborted: false, turnId: 't1', reason: 'answer' };
 
-    const p1 = handler($, event, next1);
+    const p1 = handler($, answered, next1);
     // p1's `compacting = true` runs synchronously before its first await, so this second,
     // overlapping dispatch must see the claim and bail out immediately, before p1 resolves.
-    const p2 = handler($, event, next2);
-    expect(next2).toHaveBeenCalledWith(event);
+    const p2 = handler($, answered, next2);
+    expect(next2).toHaveBeenCalledWith(answered);
     expect(usage).toHaveBeenCalledTimes(1);
 
     resolveUsage({ context: { percent: 0 } });
     await Promise.all([p1, p2]);
     expect(usage).toHaveBeenCalledTimes(1);
-    expect(compact).not.toHaveBeenCalled();
-    expect(next1).toHaveBeenCalledWith(event);
+    expect(run).not.toHaveBeenCalled();
+    expect(next1).toHaveBeenCalledWith(answered);
   });
 
-  it('does not compact below compactAtPercent, and compacts above it, logging an outcome.skip veto', async () => {
+  it('does not compact below compactAtPercent, and queues /compact above it without $.session.compact', async () => {
     const { on, handlers } = harness();
     register(on, { compactAtPercent: 60 });
     const handler = handlers.get('turn.complete')!;
     const next = vi.fn(async (e: unknown) => e);
-    const event = { answer: '', durationMs: 0, isAborted: false, turnId: 't1', reason: 'answer' };
 
-    const compactBelow = vi.fn();
-    const belowLogs: string[] = [];
-    await handler(
-      {
-        session: { usage: async () => ({ context: { percent: 59 } }), compact: compactBelow },
-        ui: { log: (t: string) => belowLogs.push(t), toast: vi.fn() },
-      },
-      event,
-      next,
-    );
-    expect(compactBelow).not.toHaveBeenCalled();
+    const below = turn$(59, async () => ({}));
+    await handler(below.$, answered, next);
+    expect(below.$.command.run).not.toHaveBeenCalled();
 
-    const compactAbove = vi.fn(async () => ({ skip: 'user declined' }));
-    const aboveLogs: string[] = [];
-    await handler(
-      {
-        session: { usage: async () => ({ context: { percent: 75 } }), compact: compactAbove },
-        ui: { log: (t: string) => aboveLogs.push(t), toast: vi.fn() },
-      },
-      event,
-      next,
-    );
-    expect(compactAbove).toHaveBeenCalledTimes(1);
-    expect(aboveLogs).toContain('auto-compact vetoed (user declined)');
+    const above = turn$(75, async () => ({ text: 'Not compacted · user declined' }));
+    await handler(above.$, answered, next);
+    await vi.waitFor(() => expect(above.logs).toContain('auto-compact: Not compacted · user declined'));
+    expect(above.$.command.run).toHaveBeenCalledTimes(1);
+    expect(above.$.command.run).toHaveBeenCalledWith({ command: 'compact' });
+    expect(above.$.session.compact).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns before the queued /compact runs, and holds the guard until it settles', async () => {
+    const { on, handlers } = harness();
+    register(on, { compactAtPercent: 60 });
+    const handler = handlers.get('turn.complete')!;
+    let settle!: (value: { text?: string }) => void;
+    const { $ } = turn$(75, () => new Promise((res) => (settle = res)));
+    const next = vi.fn(async (e: unknown) => e);
+
+    // The queued command waits for an idle session, which can wait on this hook: awaiting it
+    // here would deadlock, so the handler must resolve with the command still pending.
+    await handler($, answered, next);
+    expect(next).toHaveBeenCalledTimes(1);
+    expect($.command.run).toHaveBeenCalledTimes(1);
+
+    // While it is pending, a later turn does not queue a second one.
+    await handler($, answered, next);
+    expect($.session.usage).toHaveBeenCalledTimes(1);
+    expect($.command.run).toHaveBeenCalledTimes(1);
+
+    settle({});
+    await vi.waitFor(async () => {
+      await handler($, answered, next);
+      expect($.command.run).toHaveBeenCalledTimes(2);
+    });
   });
 
   it('toasts the first auto-compact failure once and only logs later ones', async () => {
@@ -212,18 +237,51 @@ describe('register: turn.complete dispatch', () => {
         usage: async () => {
           throw new Error('boom');
         },
-        compact: vi.fn(),
       },
+      command: { run: unreachable('$.command.run') },
       ui: { log: (t: string) => logs.push(t), toast: (t: string) => toasts.push(t) },
     };
     const next = vi.fn(async (e: unknown) => e);
-    const event = { answer: '', durationMs: 0, isAborted: false, turnId: 't1', reason: 'answer' };
 
-    await handler($, event, next);
-    await handler($, event, next);
+    await handler($, answered, next);
+    await handler($, answered, next);
 
     expect(toasts).toHaveLength(1);
     expect(toasts[0]).toMatch(/auto-compact skipped \(boom\)/);
     expect(logs.filter((l) => l.includes('auto-compact skipped'))).toHaveLength(2);
+  });
+
+  it('reports a rejected /compact as skipped and releases the guard', async () => {
+    const { on, handlers } = harness();
+    register(on, { compactAtPercent: 60 });
+    const handler = handlers.get('turn.complete')!;
+    const { $, logs, toasts } = turn$(75, async () => {
+      throw new Error('unknown command');
+    });
+    const next = vi.fn(async (e: unknown) => e);
+
+    await handler($, answered, next);
+    await vi.waitFor(() => expect(toasts).toEqual(['auto-compact skipped (unknown command)']));
+    await vi.waitFor(async () => {
+      await handler($, answered, next);
+      expect($.command.run).toHaveBeenCalledTimes(2);
+    });
+    expect(logs.filter((l) => l.includes('auto-compact skipped'))).toHaveLength(2);
+  });
+
+  it('releases the guard when $.command.run throws before returning a promise', async () => {
+    const { on, handlers } = harness();
+    register(on, { compactAtPercent: 60 });
+    const handler = handlers.get('turn.complete')!;
+    const { $, toasts } = turn$(75, () => {
+      throw new Error('command.run unavailable');
+    });
+    const next = vi.fn(async (e: unknown) => e);
+
+    await handler($, answered, next);
+    expect(toasts).toEqual(['auto-compact skipped (command.run unavailable)']);
+    await handler($, answered, next);
+    expect($.command.run).toHaveBeenCalledTimes(2);
+    expect(next).toHaveBeenCalledTimes(2);
   });
 });
