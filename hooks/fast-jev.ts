@@ -337,13 +337,8 @@ export const register: Register = (on: On, options: PluginOptions) => {
     // main session's usage too, and an interrupted turn is no moment to compact.
     if (compacting || event.agentId || event.reason !== 'answer') return next(event);
     compacting = true; // claimed before any await, so an overlapping dispatch returns above
-    try {
-      const { context } = await $.session.usage();
-      if ((context.percent ?? 0) >= configured.compactAtPercent) {
-        const outcome = await $.session.compact();
-        if (outcome.skip) $.ui.log(`auto-compact vetoed (${outcome.skip})`);
-      }
-    } catch (error) {
+    let queued = false;
+    const skipped = (error: unknown) => {
       // Toast the first failure once, so a threshold that never compacts is not silent.
       const text = `auto-compact skipped (${error instanceof Error ? error.message : String(error)})`;
       if (skipNoticed) $.ui.log(text);
@@ -351,8 +346,34 @@ export const register: Register = (on: On, options: PluginOptions) => {
         skipNoticed = true;
         notify($, text);
       }
+    };
+    try {
+      const { context } = await $.session.usage();
+      if ((context.percent ?? 0) >= configured.compactAtPercent) {
+        // `/compact` through `$.command.run`, not `$.session.compact()`: the latter rejects
+        // while a turn is in flight (a queued message or task notification can start the
+        // next turn before this hook runs) and is unavailable in an SDK session such as the
+        // desktop app. A queued command runs once the session is idle, in both. Not awaited:
+        // it can wait on a turn that waits on this hook. The guard holds until it settles,
+        // so later turns do not queue a second one; a run that throws before it returns a
+        // promise leaves `queued` false, so the finally below releases it.
+        const pending = $.command.run({ command: 'compact' });
+        queued = true;
+        void (async () => {
+          try {
+            const result = await pending;
+            if (result?.text) $.ui.log(`auto-compact: ${result.text}`);
+          } catch (error) {
+            skipped(error);
+          } finally {
+            compacting = false;
+          }
+        })();
+      }
+    } catch (error) {
+      skipped(error);
     } finally {
-      compacting = false;
+      if (!queued) compacting = false;
     }
     return next(event);
   });
