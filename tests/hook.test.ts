@@ -56,6 +56,7 @@ describe('hook config', () => {
   it('reads userConfig values and falls back to defaults', () => {
     expect(resolveHookConfig({})).toEqual({ compactAtPercent: 60, minReductionRatio: 0.25, model: 'jev-latest' });
     expect(resolveHookConfig({ resultSampleChars: 200 })).toMatchObject({ resultSampleChars: 200 });
+    expect(resolveHookConfig({ minCallChars: 800 })).toMatchObject({ minCallChars: 800 });
     expect(
       resolveHookConfig({ apiKey: 'k', keepThreshold: 0.3, maxStateTokens: 1000, model: 'jev-x', goal: 'g', compactAtPercent: 'no' }),
     ).toEqual({
@@ -127,6 +128,16 @@ describe('compactSession', () => {
     expect(summarize(output)).toMatch(/^\d+% reduction; 1 kept, 1 call_dropped; state ~\d+ tokens \(full\) in 1 request\(s\)$/);
     expect(decisionLog(output)).toBe('t1:Read:drop_call/call=0.10/result=0.10 t2:Bash:keep/call=0.90/result=0.90');
     expect(decisionLogLines(output)).toEqual([`decisions: ${decisionLog(output)}`]);
+  });
+
+  it('sends no Jev request when the minimum reduction is out of reach', async () => {
+    const bodies: string[] = [];
+    const messages = transcript();
+    messages[0] = message('user', 'x'.repeat(20_000), { handle: 'h-0' });
+    const config = { ...resolveHookConfig({ preserveRecentMessages: 1 }), apiKey: 'k' };
+    const { result: output } = await compactSession(messages, config, jevFetch(() => 0.1, bodies));
+    expect(bodies).toHaveLength(0);
+    expect(summarize(output)).toMatch(/^0% reduction; 2 unasked; state ~0 tokens \(skipped\) in 0 request\(s\)$/);
   });
 
   it('splits a long decision log into ui.log lines under the host limit', async () => {

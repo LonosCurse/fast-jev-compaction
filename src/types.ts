@@ -60,7 +60,12 @@ export interface CallDecision extends CallAnswer {
   id: string;
   tool: string;
   action: CallAction;
-  reason: 'pinned' | 'kept' | 'result_dropped' | 'call_dropped';
+  /**
+   * `unasked` is decided without Jev and keeps everything: a call under
+   * `minCallChars`, or every candidate when too little could be gained to be
+   * worth a request (`minReductionRatio`).
+   */
+  reason: 'pinned' | 'kept' | 'result_dropped' | 'call_dropped' | 'unasked';
 }
 
 export interface HistoryToolCall {
@@ -111,6 +116,13 @@ export interface CompactOptions {
    * 300; zero asks without a sample, as upstream did.
    */
   resultSampleChars?: number;
+  /** Calls whose input plus result are shorter than this are kept without asking. Default 0. */
+  minCallChars?: number;
+  /**
+   * Skip Jev entirely, keeping everything, when even dropping every candidate
+   * could not reach this reduction. Default 0 (always ask).
+   */
+  minReductionRatio?: number;
 }
 
 export interface ResolvedCompactOptions {
@@ -121,6 +133,8 @@ export interface ResolvedCompactOptions {
   maxRequestTokens: number;
   truncateHeadChars: number;
   resultSampleChars: number;
+  minCallChars: number;
+  minReductionRatio: number;
 }
 
 export interface CompactResult {
@@ -137,8 +151,9 @@ export interface CompactResult {
     resultsDropped: number;
     callsDropped: number;
     pinned: number;
+    unasked: number;
     stateTokens: number;
-    /** Which fitting stage the state needed, '' when no request was made. */
+    /** Which fitting stage the state needed; '' when nothing was asked, 'skipped' when too little could be gained. */
     stateStage: string;
     requests: number;
     ms: number;
