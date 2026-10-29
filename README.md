@@ -124,9 +124,12 @@ put it in a source file.
 | `maxRequestTokens` | `30000` | Estimated ceiling for state plus one batch of questions |
 | `truncateHeadChars` | `300` | Characters of a dropped tool result retained before its note |
 | `resultSampleChars` | `300` | Characters sampled (head and tail) from a `Read` result into the question that judges it; 0 asks without a sample |
+| `minCallChars` | `0` | Calls whose input plus result are shorter than this are kept without asking Jev |
+| `minReductionRatio` | `0` | Skip Jev and keep everything when even dropping every candidate could not reach this reduction (the plugin passes its own `0.25`) |
 
 `result.stats` reports message and character counts before and after, the
-per-reason decision counts, the state size in estimated tokens, which fitting
+per-reason decision counts (`unasked` counts calls kept without a
+question), the state size in estimated tokens, which fitting
 stage was needed, and the number of requests.
 
 ## Limitations

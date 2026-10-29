@@ -68,6 +68,7 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
     'maxRequestTokens',
     'truncateHeadChars',
     'resultSampleChars',
+    'minCallChars',
   ] as const) {
     const value = options[key];
     if (typeof value === 'number' && Number.isFinite(value)) numbers[key] = value;
@@ -210,6 +211,7 @@ export function summarize(result: CompactResult): string {
     stats.resultsDropped > 0 ? `${stats.resultsDropped} results truncated` : '',
     stats.callsDropped > 0 ? `${stats.callsDropped} call_dropped` : '',
     stats.pinned > 0 ? `${stats.pinned} pinned` : '',
+    stats.unasked > 0 ? `${stats.unasked} unasked` : '',
   ].filter(Boolean);
   return `${percent(reductionRatio(result))} reduction; ${
     parts.join(', ') || 'no tool calls'

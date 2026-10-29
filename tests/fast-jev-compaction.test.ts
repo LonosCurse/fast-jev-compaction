@@ -82,6 +82,12 @@ describe('options', () => {
       maxRequestTokens: 30_000,
       truncateHeadChars: 300,
       resultSampleChars: 300,
+      minCallChars: 0,
+      minReductionRatio: 0,
+    });
+    expect(resolveOptions({ minCallChars: -5, minReductionRatio: -0.1 })).toMatchObject({
+      minCallChars: 0,
+      minReductionRatio: 0,
     });
     expect(resolveOptions({
       keepThreshold: Number.NaN,
@@ -518,6 +524,49 @@ describe('compact', () => {
     const output = await compact(transcript(), fakeJev(() => 0.95), { preserveRecentMessages: 1 });
     expect(output.decisions.every((d) => d.action === 'keep')).toBe(true);
     expect(reductionRatio(output)).toBe(0);
+  });
+
+  it('skips Jev and keeps everything when dropping every candidate could not reach minReductionRatio', async () => {
+    const seen: Seen[] = [];
+    const messages = transcript();
+    messages[0] = message('user', 'x'.repeat(20_000));
+    const output = await compact(messages, fakeJev(() => 0, seen), {
+      preserveRecentMessages: 1,
+      minReductionRatio: 0.25,
+    });
+    expect(seen).toHaveLength(0);
+    expect(output.messages).toEqual(messages);
+    expect(output.decisions.map((d) => d.reason)).toEqual(['unasked', 'unasked', 'unasked']);
+    expect(output.stats).toMatchObject({ requests: 0, stateStage: 'skipped', unasked: 3, kept: 0 });
+    expect(reductionRatio(output)).toBe(0);
+  });
+
+  it('still asks when dropping the candidates could reach minReductionRatio', async () => {
+    const seen: Seen[] = [];
+    const output = await compact(transcript(), fakeJev(() => 0, seen), {
+      preserveRecentMessages: 1,
+      minReductionRatio: 0.25,
+    });
+    expect(seen.length).toBeGreaterThan(0);
+    expect(output.stats.unasked).toBe(0);
+    expect(reductionRatio(output)).toBeGreaterThanOrEqual(0.25);
+  });
+
+  it('keeps calls under minCallChars without asking about them', async () => {
+    const seen: Seen[] = [];
+    const output = await compact(transcript(), fakeJev(() => 0, seen), {
+      preserveRecentMessages: 1,
+      minCallChars: 500,
+    });
+    expect(seen.flatMap((r) => r.questions).sort()).toEqual([
+      'call_t1',
+      'call_t2',
+      'result_t1',
+      'result_t2',
+    ]);
+    const bash = output.decisions.find((d) => d.tool === 'Bash');
+    expect(bash).toMatchObject({ action: 'keep', reason: 'unasked', keepCall: 1, keepResult: 1 });
+    expect(output.stats).toMatchObject({ unasked: 1, callsDropped: 2 });
   });
 
   it('rejects malformed answers', async () => {

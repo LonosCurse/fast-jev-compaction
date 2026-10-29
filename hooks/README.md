@@ -62,7 +62,15 @@ The plugin declares these `userConfig` values in
 | `maxRequestTokens` | `30000` |
 | `truncateHeadChars` | `300` |
 | `resultSampleChars` | `300` |
+| `minCallChars` | `0` |
 | `model` | `jev-latest` |
+
+`minReductionRatio` does two things. After compaction it is the minimum
+reduction for the result to replace the history. Before compaction, when even
+dropping every candidate tool call could not reach it, Jev is not asked at all
+and the built-in summary runs, since the result would be rejected anyway.
+`minCallChars` (off by default) keeps calls whose input plus result are shorter
+than the given size without asking Jev about them.
 
 The TypeSafe key can be supplied as the sensitive `apiKey` plugin option or
 through `TYPESAFE_API_KEY`. The environment variable is the recommended
