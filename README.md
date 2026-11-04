@@ -132,6 +132,12 @@ per-reason decision counts (`unasked` counts calls kept without a
 question), the state size in estimated tokens, which fitting
 stage was needed, and the number of requests.
 
+## Run log
+
+Each compaction the hook handles writes one small JSON file to `~/.claude/jev-runs/<epochMs>-<id>.json`. The Claude desktop app does not persist the hook's `ui.log` lines, so without this file a desktop run leaves no trace. Fields: `at`, `trigger`, `outcome` (`kept` or `fallback`), `reason` (`below_minimum`, `http_<status>` or `error`), `messagesBefore`, `messagesAfter`, `reduction`, `requests`, `stateTokens`, `stateStage`, `jevMs`, `totalMs`.
+
+Entries hold counts and timings only: no message text, tool input or API key. The write is best-effort and never changes the compaction result. The folder is never pruned (about 15 small files a day), so delete it whenever you like. Subagent and precompute events are not logged.
+
 ## Limitations
 
 - Only tool calls and results are candidates; text messages are never removed

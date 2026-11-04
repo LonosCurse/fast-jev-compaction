@@ -120,6 +120,106 @@ describe('register: session.compact dispatch', () => {
   });
 });
 
+describe('register: run log', () => {
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  /** A `$` whose `$.fs.write` records every (path, text) pair. */
+  function logging$(fetch: (...args: never[]) => unknown, home: string | null = '/home/u') {
+    const writes: Array<[string, string]> = [];
+    const $ = {
+      http: { fetch },
+      ui: { log: vi.fn(), toast: vi.fn() },
+      env: { get: vi.fn(async () => home ?? undefined) },
+      settings: { read: unreachable('$.settings.read') },
+      fs: { write: vi.fn(async (path: string, text: string) => void writes.push([path, text])) },
+    };
+    return { $, writes };
+  }
+  const fakeKey = crypto.randomUUID();
+  const options = { apiKey: fakeKey, minReductionRatio: 0, preserveRecentMessages: 1 };
+
+  it('writes one entry per kept run, with counts and no message text or key', async () => {
+    const { on, handlers } = harness();
+    register(on, options);
+    const { $, writes } = logging$(jevFetch(() => 0.1));
+    const messages = transcript();
+    await handlers.get('session.compact')!($, { trigger: 'auto', messages }, vi.fn());
+    await flush();
+    expect(writes).toHaveLength(1);
+    const [path, text] = writes[0]!;
+    expect(path).toMatch(/^\/home\/u\/\.claude\/jev-runs\/\d+-[a-z0-9]+\.json$/);
+    const entry = JSON.parse(text);
+    expect(entry).toMatchObject({ trigger: 'auto', outcome: 'kept', messagesBefore: messages.length });
+    expect(entry.messagesAfter).toBeGreaterThan(0);
+    expect(text).not.toContain('export const a');
+    expect(text).not.toContain(fakeKey);
+  });
+
+  it('logs a below-minimum fallback before the built-in summary settles', async () => {
+    const { on, handlers } = harness();
+    register(on, { ...options, minReductionRatio: 0.99 });
+    const { $, writes } = logging$(jevFetch(() => 0.9));
+    void handlers.get('session.compact')!($, { trigger: 'manual', messages: transcript() }, () => new Promise(() => {}));
+    await flush();
+    expect(JSON.parse(writes[0]![1])).toMatchObject({ outcome: 'fallback', reason: 'below_minimum' });
+  });
+
+  it('records an HTTP failure as a status category, never the response body', async () => {
+    const { on, handlers } = harness();
+    register(on, options);
+    const { $, writes } = logging$(async () => ({ status: 503, ok: false, text: 'echo: export const a' }));
+    await handlers.get('session.compact')!($, { trigger: 'auto', messages: transcript() }, vi.fn());
+    await flush();
+    expect(writes).toHaveLength(1);
+    expect(JSON.parse(writes[0]![1])).toMatchObject({ outcome: 'fallback', reason: 'http_503' });
+    expect(writes[0]![1]).not.toContain('echo');
+  });
+
+  it('does not change the result when the write fails or HOME is unset', async () => {
+    const { on, handlers } = harness();
+    register(on, options);
+    const failing = logging$(jevFetch(() => 0.1));
+    failing.$.fs.write.mockRejectedValue(new Error('disk full'));
+    const out = (await handlers.get('session.compact')!(failing.$, { trigger: 'auto', messages: transcript() }, vi.fn())) as {
+      messages: SessionMessage[];
+    };
+    expect(out.messages.length).toBeGreaterThan(0);
+    const noHome = logging$(jevFetch(() => 0.1), null);
+    await handlers.get('session.compact')!(noHome.$, { trigger: 'auto', messages: transcript() }, vi.fn());
+    await flush();
+    expect(noHome.$.fs.write).not.toHaveBeenCalled();
+  });
+
+  it('logs a fallback, not kept, when the notice throws after a kept decision', async () => {
+    const { on, handlers } = harness();
+    register(on, options);
+    const { $, writes } = logging$(jevFetch(() => 0.1));
+    $.ui.toast.mockImplementationOnce(() => {
+      throw new Error('toast failed');
+    });
+    const next = vi.fn(async () => ({}));
+    await handlers.get('session.compact')!($, { trigger: 'auto', messages: transcript() }, next);
+    await flush();
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(writes).toHaveLength(1);
+    expect(JSON.parse(writes[0]![1])).toMatchObject({ outcome: 'fallback', reason: 'error' });
+  });
+
+  it('gives two runs in the same millisecond different file names', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const { on, handlers } = harness();
+      register(on, options);
+      const { $, writes } = logging$(jevFetch(() => 0.1));
+      for (let i = 0; i < 2; i++) await handlers.get('session.compact')!($, { trigger: 'auto', messages: transcript() }, vi.fn());
+      await flush();
+      expect(new Set(writes.map(([path]) => path)).size).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('register: turn.complete dispatch', () => {
   const answered = { answer: '', durationMs: 0, isAborted: false, turnId: 't1', reason: 'answer' };
 
