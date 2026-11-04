@@ -324,9 +324,24 @@ function notify(
   $.ui.toast(text, { timeoutMs: 15_000 });
 }
 
+/**
+ * The compaction this hook queues runs after the turn that crossed the threshold, with the
+ * session idle, so nothing starts the next turn and an unfinished task would wait for the
+ * person to type. Core's own mid-turn compaction continues by itself and needs none of this.
+ */
+const RESUME_PROMPT =
+  'Context was just compacted. Re-read your task list and the compacted summary, then continue ' +
+  'the work that was in flight. If nothing was in flight, say so in one line.';
+
+// What /compact prints when it did nothing: the texts seen from `$.command.run`. Anything
+// else, including no text, counts as compacted. shortcut: success has no known text, so a
+// new failure wording would send one needless resume turn; add it here when one shows up.
+const COMPACT_FAILED = /^(Not compacted|Error during compaction)/;
+
 export const register: Register = (on: On, options: PluginOptions) => {
   const configured = resolveHookConfig(options);
   let compacting = false;
+  let resuming = false;
   let skipNoticed = false;
 
   on('session.compact', async ($, event, next) => {
@@ -400,7 +415,14 @@ export const register: Register = (on: On, options: PluginOptions) => {
   on('turn.complete', async ($, event: TurnCompleteInput, next) => {
     // Only the main loop's answered turns: a subagent's turn.complete (agentId) reads the
     // main session's usage too, and an interrupted turn is no moment to compact.
-    if (compacting || event.agentId || event.reason !== 'answer') return next(event);
+    if (compacting || event.agentId) return next(event);
+    // The resume turn's own end, answered or interrupted: skip the threshold check once, or a
+    // compaction that leaves the context above it would compact, resume and compact again.
+    if (resuming) {
+      resuming = false;
+      return next(event);
+    }
+    if (event.reason !== 'answer') return next(event);
     compacting = true; // claimed before any await, so an overlapping dispatch returns above
     let queued = false;
     const skipped = (error: unknown) => {
@@ -428,6 +450,19 @@ export const register: Register = (on: On, options: PluginOptions) => {
           try {
             const result = await pending;
             if (result?.text) $.ui.log(`auto-compact: ${result.text}`);
+            if (!COMPACT_FAILED.test(result?.text ?? '')) {
+              resuming = true;
+              try {
+                const sent = await $.prompt.submit({ text: RESUME_PROMPT });
+                if (sent?.drop) {
+                  resuming = false; // no resume turn will start to clear it
+                  $.ui.log(`auto-compact: resume prompt not sent (${sent.drop})`);
+                }
+              } catch (error) {
+                resuming = false;
+                $.ui.log(`auto-compact: resume prompt failed (${error instanceof Error ? error.message : String(error)})`);
+              }
+            }
           } catch (error) {
             skipped(error);
           } finally {

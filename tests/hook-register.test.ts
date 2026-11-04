@@ -230,6 +230,7 @@ describe('register: turn.complete dispatch', () => {
     const $ = {
       session: { usage: vi.fn(async () => ({ context: { percent } })), compact: unreachable('$.session.compact') },
       command: { run: vi.fn(run) },
+      prompt: { submit: vi.fn(async () => ({})) },
       ui: { log: (t: string) => logs.push(t), toast: (t: string) => toasts.push(t) },
     };
     return { $, logs, toasts };
@@ -383,5 +384,90 @@ describe('register: turn.complete dispatch', () => {
     await handler($, answered, next);
     expect($.command.run).toHaveBeenCalledTimes(2);
     expect(next).toHaveBeenCalledTimes(2);
+  });
+
+  it('submits one resume prompt after a queued /compact succeeds, and skips the threshold check on that turn', async () => {
+    const { on, handlers } = harness();
+    register(on, { compactAtPercent: 60 });
+    const handler = handlers.get('turn.complete')!;
+    const { $ } = turn$(75, async () => ({ text: 'Compacted' }));
+    const next = vi.fn(async (e: unknown) => e);
+
+    await handler($, answered, next);
+    await vi.waitFor(() => expect($.prompt.submit).toHaveBeenCalledTimes(1));
+    expect(($.prompt.submit.mock.calls[0] as unknown[])[0]).toMatchObject({ text: expect.stringContaining('continue') });
+
+    // The resume turn ends above the threshold: it must not queue another compaction.
+    await handler($, answered, next);
+    expect($.command.run).toHaveBeenCalledTimes(1);
+    expect($.session.usage).toHaveBeenCalledTimes(1);
+
+    // The turn after that is checked again.
+    await handler($, answered, next);
+    await vi.waitFor(() => expect($.command.run).toHaveBeenCalledTimes(2));
+  });
+
+  it('does not resume when the compaction was declined or failed', async () => {
+    const { on, handlers } = harness();
+    register(on, { compactAtPercent: 60 });
+    const handler = handlers.get('turn.complete')!;
+    const next = vi.fn(async (e: unknown) => e);
+
+    const declined = turn$(75, async () => ({ text: 'Not compacted · user declined' }));
+    await handler(declined.$, answered, next);
+    await vi.waitFor(() => expect(declined.logs).toContain('auto-compact: Not compacted · user declined'));
+
+    const failed = turn$(75, async () => {
+      throw new Error('unknown command');
+    });
+    await handler(failed.$, answered, next);
+    await vi.waitFor(() => expect(failed.toasts).toHaveLength(1));
+
+    expect(declined.$.prompt.submit).not.toHaveBeenCalled();
+    expect(failed.$.prompt.submit).not.toHaveBeenCalled();
+  });
+
+  it('logs a failed or dropped resume prompt and does not skip the next check', async () => {
+    for (const outcome of [
+      { setup: (submit: ReturnType<typeof vi.fn>) => submit.mockRejectedValue(new Error('prompt.submit unavailable')), log: 'auto-compact: resume prompt failed (prompt.submit unavailable)' },
+      { setup: (submit: ReturnType<typeof vi.fn>) => submit.mockResolvedValue({ drop: 'stopped' }), log: 'auto-compact: resume prompt not sent (stopped)' },
+    ]) {
+      const { on, handlers } = harness();
+      register(on, { compactAtPercent: 60 });
+      const handler = handlers.get('turn.complete')!;
+      const { $, logs, toasts } = turn$(75, async () => ({ text: 'Compacted' }));
+      outcome.setup($.prompt.submit);
+      const next = vi.fn(async (e: unknown) => e);
+
+      await handler($, answered, next);
+      await vi.waitFor(() => expect(logs).toContain(outcome.log));
+      expect(toasts).toHaveLength(0);
+      await vi.waitFor(async () => {
+        await handler($, answered, next);
+        expect($.command.run).toHaveBeenCalledTimes(2);
+      });
+    }
+  });
+
+  it('an interrupted resume turn still clears the skip, and an error-text compaction does not resume', async () => {
+    const { on, handlers } = harness();
+    register(on, { compactAtPercent: 60 });
+    const handler = handlers.get('turn.complete')!;
+    const { $ } = turn$(75, async () => ({ text: 'Compacted' }));
+    const next = vi.fn(async (e: unknown) => e);
+
+    await handler($, answered, next);
+    await vi.waitFor(() => expect($.prompt.submit).toHaveBeenCalledTimes(1));
+    await handler($, { ...answered, reason: 'interrupted' }, next);
+    await handler($, answered, next);
+    await vi.waitFor(() => expect($.command.run).toHaveBeenCalledTimes(2));
+
+    // A fresh registration, since the sequence above left a resume skip pending.
+    const fresh = harness();
+    register(fresh.on, { compactAtPercent: 60 });
+    const failed = turn$(75, async () => ({ text: 'Error during compaction: summarization produced empty response' }));
+    await fresh.handlers.get('turn.complete')!(failed.$, answered, next);
+    await vi.waitFor(() => expect(failed.logs).toHaveLength(1));
+    expect(failed.$.prompt.submit).not.toHaveBeenCalled();
   });
 });

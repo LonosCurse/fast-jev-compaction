@@ -138,6 +138,10 @@ Each compaction the hook handles writes one small JSON file to `~/.claude/jev-ru
 
 Entries hold counts and timings only: no message text, tool input or API key. The write is best-effort and never changes the compaction result. The folder is never pruned (about 15 small files a day), so delete it whenever you like. Subagent and precompute events are not logged.
 
+## Resuming after an auto-compaction
+
+When the context passes `compactAtPercent`, the plugin queues `/compact` after the turn ends, so the session is idle and nothing would start the next turn. Once that compaction succeeds, the plugin submits one short prompt telling Claude to re-read its task list and continue the work in flight, or to say that nothing was. It skips the threshold check on that resume turn, so a compaction that leaves the context high cannot loop. A declined or failed compaction submits nothing. Manual `/compact` and Claude Code's own mid-turn compaction are untouched.
+
 ## Limitations
 
 - Only tool calls and results are candidates; text messages are never removed
