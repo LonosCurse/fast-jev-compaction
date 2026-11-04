@@ -171,6 +171,15 @@ function historyEntries(
   return entries;
 }
 
+/**
+ * The prompt the hook submits to continue after a compaction it queued. It is not the
+ * person's, so the goal leaves it out or it would crowd real instructions off the list. Matched
+ * by prefix: a hook may append context after it.
+ */
+export const RESUME_PROMPT =
+  'Context was just compacted. Re-read your task list and the compacted summary, then continue ' +
+  'the work that was in flight. If nothing was in flight, say so in one line.';
+
 /** The last three user prompts, as the default `goal`. */
 export function goalFromMessages(messages: readonly Message[]): string {
   return messages
@@ -178,6 +187,7 @@ export function goalFromMessages(messages: readonly Message[]): string {
       (message) =>
         message.role === 'user' &&
         message.text.trim().length > 0 &&
+        !message.text.trimStart().startsWith(RESUME_PROMPT) &&
         (message.toolResults ?? []).length === 0,
     )
     .slice(-3)
