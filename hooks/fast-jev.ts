@@ -253,6 +253,45 @@ export function decisionLogLines(
   );
 }
 
+export interface RunLogEntry {
+  at: string;
+  trigger: string;
+  outcome: 'kept' | 'fallback';
+  /** A fixed category, never response text: `below_minimum`, `http_<status>` or `error`. */
+  reason?: string;
+  messagesBefore: number;
+  messagesAfter?: number;
+  reduction?: number;
+  requests?: number;
+  stateTokens?: number;
+  stateStage?: string;
+  jevMs?: number;
+  totalMs: number;
+}
+
+/**
+ * One small JSON file per compaction under `~/.claude/jev-runs`, because the desktop app
+ * does not persist `$.ui.log`, so nothing else records a run there. One file per run: a
+ * write replaces the whole file, and an append would race across parallel sessions.
+ * Fire-and-forget: a failed write must never change the compaction outcome.
+ */
+function recordRun(
+  $: { env: { get: (name: string) => Promise<string | undefined> }; fs: { write: (path: string, text: string) => Promise<void> } },
+  entry: RunLogEntry,
+): void {
+  void (async () => {
+    const home = await $.env.get('HOME');
+    if (!home) return;
+    const name = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`;
+    await $.fs.write(`${home}/.claude/jev-runs/${name}`, JSON.stringify(entry));
+  })().catch(() => {});
+}
+
+export function failureReason(error: unknown): string {
+  const status = /^Jev request failed \((\d+)\)/.exec(error instanceof Error ? error.message : '');
+  return status ? `http_${status[1]}` : 'error';
+}
+
 async function getApiKey(
   $: {
     env: { get: (name: string) => Promise<string | undefined> };
@@ -297,6 +336,18 @@ export const register: Register = (on: On, options: PluginOptions) => {
     // A precompute installs nothing: skip it rather than send the history to Jev ahead of
     // time, or let core precompute a summary that the coming compaction would install.
     if (event.trigger === 'precompute') return { skip: 'fast-jev-compaction: no precompute' };
+    const started = Date.now();
+    let logged = false;
+    const log = (entry: Omit<RunLogEntry, 'at' | 'trigger' | 'messagesBefore' | 'totalMs'>) => {
+      logged = true;
+      recordRun($, {
+        at: new Date().toISOString(),
+        trigger: event.trigger,
+        messagesBefore: event.messages.length,
+        totalMs: Date.now() - started,
+        ...entry,
+      });
+    };
     try {
       const config = { ...configured, apiKey: await getApiKey($, configured) };
       let redacted = 0;
@@ -313,19 +364,31 @@ export const register: Register = (on: On, options: PluginOptions) => {
       );
       if (redacted > 0) $.ui.log(`redacted ${redacted} secret-shaped value(s) from the Jev request`);
       for (const line of decisionLogLines(result)) $.ui.log(line);
-      if (reductionRatio(result) < config.minReductionRatio) {
+      const stats = {
+        reduction: reductionRatio(result),
+        requests: result.stats.requests,
+        stateTokens: result.stats.stateTokens,
+        stateStage: result.stats.stateStage,
+        jevMs: result.stats.ms,
+      };
+      if (stats.reduction < config.minReductionRatio) {
         notify(
           $,
           `fallback to built-in summary (below ${percent(config.minReductionRatio)} minimum: ${summarize(result)})`,
         );
+        log({ outcome: 'fallback', reason: 'below_minimum', ...stats });
         return next(event);
       }
+      const kept = withoutHandles(messages);
       notify(
         $,
         `kept ${messages.length}/${event.messages.length} messages, no summary (${summarize(result)})`,
       );
-      return { messages: withoutHandles(messages) };
+      // After the last step that can throw, so a run that falls back is never logged as kept.
+      log({ outcome: 'kept', messagesAfter: messages.length, ...stats });
+      return { messages: kept };
     } catch (error) {
+      if (!logged) log({ outcome: 'fallback', reason: failureReason(error) });
       notify(
         $,
         `fallback to built-in summary (${error instanceof Error ? error.message : String(error)})`,
