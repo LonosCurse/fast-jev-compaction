@@ -9,6 +9,7 @@ import {
   decideCall,
   estimateTokens,
   fitState,
+  RESUME_PROMPT,
   JevClient,
   parseJevResponse,
   questionsFor,
@@ -145,6 +146,17 @@ describe('state fitting', () => {
       result: `ok, ${fileA.length} chars (omitted)`,
     });
     expect((state.history[4]?.tool_calls?.[0] as HistoryToolCall).result).toMatch(/^error, /);
+  });
+
+  it('leaves the resume prompt out of the default goal, even with context after it', () => {
+    const base = transcript();
+    const withResume = [
+      ...base,
+      { role: 'user' as const, text: `${RESUME_PROMPT}\n<extra context>`, toolUses: [] },
+    ];
+    const { state } = fitState(withResume, [], { ...fit, goal: '' });
+    expect(state.goal).not.toContain('Context was just compacted');
+    expect(state.goal).toContain('go ahead');
   });
 
   it('defaults the goal to the latest user prompts', () => {

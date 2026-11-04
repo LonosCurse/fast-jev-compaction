@@ -10,6 +10,7 @@ import type {
 
 import { compact, reductionRatio, resolveOptions } from '../src/compact.js';
 import { redactDeep } from '../src/redact.js';
+import { RESUME_PROMPT } from '../src/state.js';
 import { buildJevRequest, DEFAULT_MODEL, parseJevResponse } from '../src/request.js';
 import type {
   CompactOptions,
@@ -324,15 +325,6 @@ function notify(
   $.ui.toast(text, { timeoutMs: 15_000 });
 }
 
-/**
- * The compaction this hook queues runs after the turn that crossed the threshold, with the
- * session idle, so nothing starts the next turn and an unfinished task would wait for the
- * person to type. Core's own mid-turn compaction continues by itself and needs none of this.
- */
-const RESUME_PROMPT =
-  'Context was just compacted. Re-read your task list and the compacted summary, then continue ' +
-  'the work that was in flight. If nothing was in flight, say so in one line.';
-
 // What /compact prints when it did nothing: the texts seen from `$.command.run`. Anything
 // else, including no text, counts as compacted. shortcut: success has no known text, so a
 // new failure wording would send one needless resume turn; add it here when one shows up.
@@ -451,6 +443,9 @@ export const register: Register = (on: On, options: PluginOptions) => {
             const result = await pending;
             if (result?.text) $.ui.log(`auto-compact: ${result.text}`);
             if (!COMPACT_FAILED.test(result?.text ?? '')) {
+              // The queued compaction runs with the session idle, so nothing starts the next turn
+              // and an unfinished task would wait for the person to type. Core's own mid-turn
+              // compaction continues by itself and needs none of this.
               resuming = true;
               try {
                 const sent = await $.prompt.submit({ text: RESUME_PROMPT });
